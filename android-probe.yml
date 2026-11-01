@@ -2,7 +2,7 @@
 #  baseline         : Quaver de escritorio tal cual, con los submodulos reales.
 #  upstream-patched : escritorio contra MonoGame UPSTREAM (NuGet) + parche PROVISIONAL.
 #  android-probe    : Wobble y Quaver.Shared como net8.0-android (solo para listar errores de C#).
-name: android-probe-baseline
+name: android-probe-v7
 
 on:
   workflow_dispatch:
@@ -62,6 +62,8 @@ jobs:
           upstream (NuGet) en lugar del fork binario de Quaver. Falla con error claro si algun
           patron no se encuentra (p.ej. si el commit de Wobble cambia)."""
           import re, sys, pathlib
+
+          print("patch_upstream v7")
 
           root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
           W = root / "Wobble" / "Wobble"
@@ -281,6 +283,8 @@ jobs:
           patron no se encuentra (p.ej. si el commit de Wobble cambia)."""
           import re, sys, pathlib
 
+          print("patch_upstream v7")
+
           root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
           W = root / "Wobble" / "Wobble"
 
@@ -469,6 +473,7 @@ jobs:
           set +e
           {
             echo "== Wobble.csproj (final)"; tail -n 14 Wobble/Wobble/Wobble.csproj
+            echo "== marca del parche v7 (debe listar archivos)"; grep -rl 'TextInputCompat' Wobble Quaver.Shared --include=*.cs | head -5
             echo "== binarios nativos restantes (fuera de bin/obj)"
             find . -type f -not -path '*/bin/*' -not -path '*/obj/*' | grep -E '[.]so($|[.])|[.]dylib$'
             echo "== items con .so segun MSBuild"
@@ -493,3 +498,224 @@ jobs:
             patch-evidence.log
             build-android-wobble.log
             build-android-shared.log
+
+  # Hito 2 (humo): app Android MINIMA con MonoGame (4 columnas multitouch). NO es el juego Quaver.
+  #  A = solo MonoGame.  B = ademas referencia Quaver.API y parsea un mapa de prueba al arrancar.
+  android-smoke:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Fijar SDK .NET 8
+        run: |
+          echo '{"sdk":{"version":"8.0.100","rollForward":"latestFeature"}}' > global.json
+          dotnet --version
+      - name: Submodulos
+        run: git -c submodule."Quaver.Server.Client".update=none submodule update --init --recursive
+      - name: Workload android
+        run: dotnet workload install android 2>&1 | tail -n 5
+      - name: Crear app de humo (PROVISIONAL)
+        run: |
+          mkdir -p android-smoke/Assets
+          cp Quaver.Resources/Quaver.Resources/Maps/Offset/offset.qua android-smoke/Assets/test.qua
+          cat > android-smoke/QuaverAndroidSmoke.csproj <<'XMLEOF'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <TargetFramework>net8.0-android</TargetFramework>
+              <OutputType>Exe</OutputType>
+              <RootNamespace>QuaverAndroidSmoke</RootNamespace>
+              <AssemblyName>QuaverAndroidSmoke</AssemblyName>
+              <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
+              <ApplicationId>org.communityport.quaverandroid.smoke</ApplicationId>
+              <ApplicationVersion>1</ApplicationVersion>
+              <ApplicationDisplayVersion>0.0.1-smoke</ApplicationDisplayVersion>
+              <RuntimeIdentifier>android-arm64</RuntimeIdentifier>
+              <AndroidPackageFormat>apk</AndroidPackageFormat>
+              <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+              <Nullable>disable</Nullable>
+              <ImplicitUsings>disable</ImplicitUsings>
+              <LangVersion>latest</LangVersion>
+            </PropertyGroup>
+            <PropertyGroup Condition="'$(WithApi)' == 'true'">
+              <DefineConstants>$(DefineConstants);WITH_API</DefineConstants>
+            </PropertyGroup>
+            <ItemGroup>
+              <PackageReference Include="MonoGame.Framework.Android" Version="3.8.1.303" />
+            </ItemGroup>
+            <ItemGroup Condition="'$(WithApi)' == 'true'">
+              <ProjectReference Include="../Quaver.API/Quaver.API/Quaver.API.csproj" />
+            </ItemGroup>
+          </Project>
+          XMLEOF
+          cat > android-smoke/MainActivity.cs <<'CSEOF'
+          using System;
+          using System.IO;
+          using Android.App;
+          using Android.Content.PM;
+          using Android.OS;
+          using Android.Views;
+          using Android.Widget;
+          using Microsoft.Xna.Framework;
+
+          namespace QuaverAndroidSmoke
+          {
+              // PRUEBA DE HUMO (no es Quaver): actividad de MonoGame que muestra 4 columnas tactiles.
+              [Activity(Label = "Quaver Android (prueba)", MainLauncher = true, LaunchMode = LaunchMode.SingleInstance,
+                  ScreenOrientation = ScreenOrientation.SensorLandscape,
+                  ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.Keyboard | ConfigChanges.KeyboardHidden | ConfigChanges.ScreenSize)]
+              public class MainActivity : AndroidGameActivity
+              {
+                  private SmokeGame _game;
+
+                  protected override void OnCreate(Bundle bundle)
+                  {
+                      base.OnCreate(bundle);
+                      _game = new SmokeGame();
+                      SetContentView((View)_game.Services.GetService(typeof(View)));
+                      _game.Run();
+                      ShowApiCheck();
+                  }
+
+                  private void ShowApiCheck()
+                  {
+          #if WITH_API
+                      try
+                      {
+                          byte[] bytes;
+                          using (var s = Assets.Open("test.qua"))
+                          using (var ms = new MemoryStream())
+                          {
+                              s.CopyTo(ms);
+                              bytes = ms.ToArray();
+                          }
+
+                          var qua = Quaver.API.Maps.Qua.Parse(bytes, false);
+                          Toast.MakeText(this, "Quaver.API OK: " + qua.Title + " | " + qua.Mode + " | " + qua.HitObjects.Count + " notas", ToastLength.Long).Show();
+                      }
+                      catch (Exception e)
+                      {
+                          Toast.MakeText(this, "Quaver.API FALLO: " + e.GetType().Name + ": " + e.Message, ToastLength.Long).Show();
+                      }
+          #else
+                      Toast.MakeText(this, "Prueba sin Quaver.API: toca con varios dedos", ToastLength.Long).Show();
+          #endif
+                  }
+              }
+          }
+          CSEOF
+          cat > android-smoke/SmokeGame.cs <<'CSEOF'
+          using System;
+          using Microsoft.Xna.Framework;
+          using Microsoft.Xna.Framework.Graphics;
+          using Microsoft.Xna.Framework.Input;
+          using Microsoft.Xna.Framework.Input.Touch;
+
+          namespace QuaverAndroidSmoke
+          {
+              // PRUEBA DE HUMO: 4 columnas que se iluminan con multitouch. No procesa notas ni audio.
+              public class SmokeGame : Game
+              {
+                  private readonly GraphicsDeviceManager _graphics;
+                  private SpriteBatch _batch;
+                  private Texture2D _pixel;
+                  private readonly bool[] _down = new bool[4];
+
+                  public SmokeGame()
+                  {
+                      _graphics = new GraphicsDeviceManager(this)
+                      {
+                          IsFullScreen = true,
+                          SupportedOrientations = DisplayOrientation.LandscapeLeft | DisplayOrientation.LandscapeRight
+                      };
+                  }
+
+                  protected override void LoadContent()
+                  {
+                      _batch = new SpriteBatch(GraphicsDevice);
+                      _pixel = new Texture2D(GraphicsDevice, 1, 1);
+                      _pixel.SetData(new[] { Color.White });
+                  }
+
+                  protected override void Update(GameTime gameTime)
+                  {
+                      if (GamePad.GetState(PlayerIndex.One).Buttons.Back == ButtonState.Pressed)
+                          Exit();
+
+                      Array.Clear(_down, 0, _down.Length);
+                      var width = GraphicsDevice.Viewport.Width;
+
+                      foreach (var touch in TouchPanel.GetState())
+                      {
+                          if (touch.State == TouchLocationState.Released || touch.State == TouchLocationState.Invalid)
+                              continue;
+
+                          var lane = (int)(touch.Position.X / (width / 4f));
+                          if (lane < 0) lane = 0;
+                          if (lane > 3) lane = 3;
+                          _down[lane] = true;
+                      }
+
+                      base.Update(gameTime);
+                  }
+
+                  protected override void Draw(GameTime gameTime)
+                  {
+                      GraphicsDevice.Clear(Color.Black);
+                      var vp = GraphicsDevice.Viewport;
+                      var laneWidth = vp.Width / 4;
+
+                      _batch.Begin();
+                      for (var i = 0; i < 4; i++)
+                      {
+                          var color = _down[i] ? new Color(80, 160, 255) : new Color(28, 28, 36);
+                          _batch.Draw(_pixel, new Rectangle(i * laneWidth + 2, 0, laneWidth - 4, vp.Height), color);
+                      }
+
+                      _batch.Draw(_pixel, new Rectangle(0, (int)(vp.Height * 0.85f), vp.Width, 4), Color.White);
+                      _batch.End();
+
+                      base.Draw(gameTime);
+                  }
+              }
+          }
+          CSEOF
+      - name: Dependencias del SDK de Android
+        run: |
+          set +e
+          dotnet build android-smoke/QuaverAndroidSmoke.csproj -t:InstallAndroidDependencies -f net8.0-android -p:AndroidSdkDirectory="$ANDROID_HOME" -p:AcceptAndroidSDKLicenses=True 2>&1 | tee smoke-deps.log
+      - name: Build A (solo MonoGame)
+        run: |
+          set +e
+          mkdir -p smoke-out
+          dotnet build android-smoke/QuaverAndroidSmoke.csproj -c Debug 2>&1 | tee smoke-a.log
+          echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" | tee -a smoke-a.log
+          APK=$(find android-smoke/bin -name '*-Signed.apk' | head -n1); [ -z "$APK" ] && APK=$(find android-smoke/bin -name '*.apk' | head -n1)
+          echo "APK elegido: $APK" | tee -a smoke-a.log
+          [ -n "$APK" ] && cp "$APK" smoke-out/A-sin-api.apk
+          ls -la smoke-out | tee -a smoke-a.log
+      - name: Build B (con Quaver.API)
+        run: |
+          set +e
+          rm -rf android-smoke/bin android-smoke/obj
+          dotnet build android-smoke/QuaverAndroidSmoke.csproj -c Debug -p:WithApi=true 2>&1 | tee smoke-b.log
+          echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" | tee -a smoke-b.log
+          APK=$(find android-smoke/bin -name '*-Signed.apk' | head -n1); [ -z "$APK" ] && APK=$(find android-smoke/bin -name '*.apk' | head -n1)
+          echo "APK elegido: $APK" | tee -a smoke-b.log
+          [ -n "$APK" ] && cp "$APK" smoke-out/B-con-api.apk
+          ls -la smoke-out | tee -a smoke-b.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-smoke
+          path: |
+            smoke-deps.log
+            smoke-a.log
+            smoke-b.log
+            smoke-out/*.apk
