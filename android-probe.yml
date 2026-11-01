@@ -1,0 +1,73 @@
+# Sonda de línea base: ¿compila Quaver de escritorio tal cual, con submódulos reales?
+# Solo diagnóstico. No genera APK. Ejecutar a mano desde la pestaña Actions.
+name: android-probe-baseline
+
+on:
+  workflow_dispatch:
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Submódulos (como en el README, sin Server.Client)
+        run: git -c submodule."Quaver.Server.Client".update=none submodule update --init --recursive
+      - name: Versiones y commits efectivos
+        run: |
+          dotnet --info | tee versions.log
+          git submodule status | tee -a versions.log
+          git rev-parse HEAD | tee -a versions.log
+      - name: Build de escritorio (Debug)
+        run: |
+          cd Quaver
+          dotnet build 2>&1 | tee ../build.log
+      - name: Tests de Quaver.API
+        continue-on-error: true
+        run: dotnet test Quaver.API/Quaver.API.Tests 2>&1 | tee test-api.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-logs
+          path: |
+            versions.log
+            build.log
+            test-api.log
+
+  # Sonda 2: ¿compila Wobble/Quaver contra MonoGame UPSTREAM (NuGet) en vez de la DLL propia?
+  # Si compila, las diferencias del fork no se usan en tiempo de compilación.
+  # Solo diagnóstico; la versión del paquete es una hipótesis a verificar con el resultado.
+  upstream-monogame:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Submódulos
+        run: git -c submodule."Quaver.Server.Client".update=none submodule update --init --recursive
+      - name: Sustituir la DLL propia por MonoGame.Framework.DesktopGL (NuGet)
+        run: |
+          python3 - <<'PY'
+          import re, pathlib
+          pat = re.compile(r'\s*<Reference Include="MonoGame\.Framework">.*?</Reference>', re.S)
+          for p in pathlib.Path(".").rglob("*.csproj"):
+              t = p.read_text(encoding="utf-8-sig")
+              n = pat.sub("", t)
+              if n != t:
+                  p.write_text(n, encoding="utf-8")
+                  print("editado:", p)
+          PY
+          dotnet add Wobble/Wobble/Wobble.csproj package MonoGame.Framework.DesktopGL --version 3.8.1.303
+      - name: Build (guarda TODOS los errores)
+        run: |
+          cd Quaver
+          dotnet build 2>&1 | tee ../build-upstream.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-upstream-logs
+          path: build-upstream.log
