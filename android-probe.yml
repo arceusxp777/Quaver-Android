@@ -1,5 +1,7 @@
-# Sonda de línea base: ¿compila Quaver de escritorio tal cual, con submódulos reales?
-# Solo diagnóstico. No genera APK. Ejecutar a mano desde la pestaña Actions.
+# Sondas de diagnostico (NO generan APK). Ejecutar a mano desde Actions.
+#  - baseline: Quaver de escritorio tal cual, con los submodulos reales.
+#  - upstream-patched: Wobble/Quaver contra MonoGame UPSTREAM (NuGet) con un parche
+#    PROVISIONAL, para descubrir la siguiente tanda de incompatibilidades.
 name: android-probe-baseline
 
 on:
@@ -13,7 +15,7 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-      - name: Submódulos (como en el README, sin Server.Client)
+      - name: Submodulos (como en el README, sin Server.Client)
         run: git -c submodule."Quaver.Server.Client".update=none submodule update --init --recursive
       - name: Versiones y commits efectivos
         run: |
@@ -22,11 +24,16 @@ jobs:
           git rev-parse HEAD | tee -a versions.log
       - name: Build de escritorio (Debug)
         run: |
+          set +e
           cd Quaver
           dotnet build 2>&1 | tee ../build.log
+          echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" | tee -a ../build.log
       - name: Tests de Quaver.API
         continue-on-error: true
-        run: dotnet test Quaver.API/Quaver.API.Tests 2>&1 | tee test-api.log
+        run: |
+          set +e
+          dotnet test Quaver.API/Quaver.API.Tests 2>&1 | tee test-api.log
+          echo "TEST_EXIT_CODE=${PIPESTATUS[0]}" | tee -a test-api.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -36,10 +43,7 @@ jobs:
             build.log
             test-api.log
 
-  # Sonda 2: ¿compila Wobble/Quaver contra MonoGame UPSTREAM (NuGet) en vez de la DLL propia?
-  # Si compila, las diferencias del fork no se usan en tiempo de compilación.
-  # Solo diagnóstico; la versión del paquete es una hipótesis a verificar con el resultado.
-  upstream-monogame:
+  upstream-patched:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -47,27 +51,91 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-      - name: Submódulos
+      - name: Submodulos
         run: git -c submodule."Quaver.Server.Client".update=none submodule update --init --recursive
-      - name: Sustituir la DLL propia por MonoGame.Framework.DesktopGL (NuGet)
+      - name: Parche PROVISIONAL para MonoGame upstream
         run: |
-          python3 - <<'PY'
-          import re, pathlib
-          pat = re.compile(r'\s*<Reference Include="MonoGame\.Framework">.*?</Reference>', re.S)
-          for p in pathlib.Path(".").rglob("*.csproj"):
+          python3 - . <<'PY'
+          """PROVISIONAL (solo sonda de CI). Adapta Wobble/Quaver para compilar contra MonoGame
+          upstream (NuGet) en lugar del fork binario de Quaver. Falla con error claro si algun
+          patron no se encuentra (p.ej. si el commit de Wobble cambia)."""
+          import re, sys, pathlib
+
+          root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
+          W = root / "Wobble" / "Wobble"
+
+          def rw(path, fn):
+              t = path.read_text(encoding="utf-8-sig")
+              n = fn(t)
+              if n == t:
+                  sys.exit(f"PATCH FALLIDO: sin cambios en {path}")
+              path.write_text(n, encoding="utf-8")
+              print("parcheado:", path.relative_to(root))
+
+          # 1) Quitar la DLL propia de MonoGame de todos los csproj
+          ref = re.compile(r'\s*<Reference Include="MonoGame\.Framework">.*?</Reference>', re.S)
+          for p in root.rglob("*.csproj"):
               t = p.read_text(encoding="utf-8-sig")
-              n = pat.sub("", t)
+              n = ref.sub("", t)
               if n != t:
-                  p.write_text(n, encoding="utf-8")
-                  print("editado:", p)
+                  p.write_text(n, encoding="utf-8"); print("csproj sin DLL propia:", p.relative_to(root))
+
+          # 2) Game(bool preferWayland) no existe en upstream: ctor sin argumentos (parametro ignorado)
+          rw(W / "WobbleGame.cs", lambda t: t.replace(": base(preferWayland)", ": base()"))
+
+          # 3) Portapapeles: upstream no tiene Game.Get/SetClipboardText. STUB en memoria (PROVISIONAL).
+          rw(W / "Platform" / "Linux" / "SdlClipboard.cs", lambda t: re.sub(
+              r"public override string GetText\(\).*?;\s*public override void SetText\(string selectedText\).*?;",
+              "private static string _text = \"\"; // PROVISIONAL: portapapeles solo en memoria\n"
+              "        public override string GetText() => _text;\n\n"
+              "        public override void SetText(string selectedText) => _text = selectedText ?? \"\";",
+              t, flags=re.S))
+
+          # 4) Teclas solo del fork (AZERTY): se eliminan sus nombres de visualizacion
+          bad = "Asterisk|Squared|OemColon|OemCloseParenthesis|OemExclamationMark|Caret|DollarSign|PunctuatedU"
+          case = re.compile(r'\s*case Keys\.(?:%s):\s*(?:keyStr = "[^"]*";\s*)?return [^;]*;' % bad)
+          def keys(t):
+              n, c = case.subn("", t)
+              if c != 8: sys.exit(f"PATCH FALLIDO: se esperaban 8 'case' y hay {c}")
+              return n
+          rw(W / "Helpers" / "XnaKeyHelper.cs", keys)
+
+          # 5) SpriteBatch.Draw con destino RectangleF (sobrecarga del fork) -> extension equivalente
+          ext = W / "Graphics" / "SpriteBatchRectangleFExtensions.cs"
+          ext.write_text('''using Microsoft.Xna.Framework;
+          using Microsoft.Xna.Framework.Graphics;
+          using MonoGame.Extended;
+
+          namespace Wobble.Graphics
+          {
+              // PROVISIONAL: sustituye la sobrecarga Draw(..., RectangleF, ...) del fork de MonoGame.
+              // Equivalente a Draw con rectangulo destino: posicion = (X,Y), escala = destino/origen,
+              // 'origin' en pixeles de textura.
+              public static class SpriteBatchRectangleFExtensions
+              {
+                  public static void Draw(this SpriteBatch sb, Texture2D texture, RectangleF destination,
+                      Rectangle? source, Color color, float rotation, Vector2 origin, SpriteEffects effects, float layerDepth)
+                  {
+                      var sw = source?.Width ?? texture.Width;
+                      var sh = source?.Height ?? texture.Height;
+                      var scale = new Vector2(sw == 0 ? 0 : destination.Width / sw, sh == 0 ? 0 : destination.Height / sh);
+                      sb.Draw(texture, new Vector2(destination.X, destination.Y), source, color, rotation, origin, scale, effects, layerDepth);
+                  }
+              }
+          }
+          ''', encoding="utf-8")
+          print("creado:", ext.relative_to(root))
+
           PY
           dotnet add Wobble/Wobble/Wobble.csproj package MonoGame.Framework.DesktopGL --version 3.8.1.303
-      - name: Build (guarda TODOS los errores)
+      - name: Build (guarda todos los errores)
         run: |
+          set +e
           cd Quaver
-          dotnet build 2>&1 | tee ../build-upstream.log
+          dotnet build 2>&1 | tee ../build-upstream-patched.log
+          echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" | tee -a ../build-upstream-patched.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: probe-upstream-logs
-          path: build-upstream.log
+          name: probe-upstream-patched-logs
+          path: build-upstream-patched.log
