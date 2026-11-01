@@ -1,7 +1,7 @@
 # Sondas de diagnostico (NO generan APK). Ejecutar a mano desde Actions.
 #  baseline         : Quaver de escritorio tal cual, con los submodulos reales.
 #  upstream-patched : escritorio contra MonoGame UPSTREAM (NuGet) + parche PROVISIONAL.
-#  android-wobble   : intenta compilar SOLO Wobble como net8.0-android (hipotesis a verificar).
+#  android-probe    : Wobble y Quaver.Shared como net8.0-android (solo para listar errores de C#).
 name: android-probe-baseline
 
 on:
@@ -157,6 +157,30 @@ jobs:
           if total != 13: sys.exit(f"PATCH FALLIDO: se esperaban 13 usos de FileDropped y hay {total}")
           print("FileDropped redirigido en", total, "sitios")
 
+          # 7) Modo --android (SONDA): Wobble, Wobble.Extended y Quaver.Shared como net8.0-android y
+          #    sin los binarios nativos de escritorio (.so/.dll/.dylib/x64/*), que rompen el empaquetado
+          #    de Android (XA4301). NO anade soporte real de audio/Steam: es solo para ver errores de C#.
+          if "--android" in sys.argv:
+              nat = re.compile(r'\s*<None Update="(?:[^"]*\.(?:so|dll|dylib)|x64/\*)">.*?</None>', re.S)
+              for rel in ("Wobble/Wobble/Wobble.csproj", "Wobble/Wobble.Extended/Wobble.Extended.csproj",
+                          "Quaver.Shared/Quaver.Shared.csproj"):
+                  p = root / rel
+                  t = p.read_text(encoding="utf-8-sig")
+                  n = t.replace("<TargetFramework>net8.0</TargetFramework>", "<TargetFramework>net8.0-android</TargetFramework>")
+                  n, removed = nat.subn("", n)
+                  if n == t: sys.exit(f"PATCH FALLIDO (--android): sin cambios en {rel}")
+                  p.write_text(n, encoding="utf-8")
+                  print(f"android: {rel} -> net8.0-android, {removed} items nativos quitados")
+
+              # En .NET Android, OSPlatform.Linux tambien es true: el dlopen de "libdl.so.2" (solo glibc)
+              # fallaria al arrancar. Se excluye Android (la carga de libbass en Android la hace el APK).
+              wg = W / "WobbleGame.cs"
+              t = wg.read_text(encoding="utf-8-sig")
+              old = "if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))"
+              if t.count(old) != 1: sys.exit(f"PATCH FALLIDO (--android): se esperaba 1 ocurrencia en WobbleGame.cs y hay {t.count(old)}")
+              wg.write_text(t.replace(old, "if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && !OperatingSystem.IsAndroid())"), encoding="utf-8")
+              print("android: WobbleGame.cs excluye Android del dlopen(libdl.so.2)")
+
           PY
       - name: Paquete MonoGame upstream (version = hipotesis)
         run: dotnet add Wobble/Wobble/Wobble.csproj package MonoGame.Framework.DesktopGL --version 3.8.1.303
@@ -172,7 +196,7 @@ jobs:
           name: probe-upstream-patched-logs
           path: build-upstream-patched.log
 
-  android-wobble:
+  android-probe:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -192,7 +216,7 @@ jobs:
         run: git -c submodule."Quaver.Server.Client".update=none submodule update --init --recursive
       - name: Parche PROVISIONAL para MonoGame upstream
         run: |
-          python3 - . <<'PY'
+          python3 - . --android <<'PY'
           """PROVISIONAL (solo sonda de CI). Adapta Wobble/Quaver para compilar contra MonoGame
           upstream (NuGet) en lugar del fork binario de Quaver. Falla con error claro si algun
           patron no se encuentra (p.ej. si el commit de Wobble cambia)."""
@@ -292,22 +316,51 @@ jobs:
           if total != 13: sys.exit(f"PATCH FALLIDO: se esperaban 13 usos de FileDropped y hay {total}")
           print("FileDropped redirigido en", total, "sitios")
 
+          # 7) Modo --android (SONDA): Wobble, Wobble.Extended y Quaver.Shared como net8.0-android y
+          #    sin los binarios nativos de escritorio (.so/.dll/.dylib/x64/*), que rompen el empaquetado
+          #    de Android (XA4301). NO anade soporte real de audio/Steam: es solo para ver errores de C#.
+          if "--android" in sys.argv:
+              nat = re.compile(r'\s*<None Update="(?:[^"]*\.(?:so|dll|dylib)|x64/\*)">.*?</None>', re.S)
+              for rel in ("Wobble/Wobble/Wobble.csproj", "Wobble/Wobble.Extended/Wobble.Extended.csproj",
+                          "Quaver.Shared/Quaver.Shared.csproj"):
+                  p = root / rel
+                  t = p.read_text(encoding="utf-8-sig")
+                  n = t.replace("<TargetFramework>net8.0</TargetFramework>", "<TargetFramework>net8.0-android</TargetFramework>")
+                  n, removed = nat.subn("", n)
+                  if n == t: sys.exit(f"PATCH FALLIDO (--android): sin cambios en {rel}")
+                  p.write_text(n, encoding="utf-8")
+                  print(f"android: {rel} -> net8.0-android, {removed} items nativos quitados")
+
+              # En .NET Android, OSPlatform.Linux tambien es true: el dlopen de "libdl.so.2" (solo glibc)
+              # fallaria al arrancar. Se excluye Android (la carga de libbass en Android la hace el APK).
+              wg = W / "WobbleGame.cs"
+              t = wg.read_text(encoding="utf-8-sig")
+              old = "if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))"
+              if t.count(old) != 1: sys.exit(f"PATCH FALLIDO (--android): se esperaba 1 ocurrencia en WobbleGame.cs y hay {t.count(old)}")
+              wg.write_text(t.replace(old, "if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && !OperatingSystem.IsAndroid())"), encoding="utf-8")
+              print("android: WobbleGame.cs excluye Android del dlopen(libdl.so.2)")
+
           PY
-      - name: Workload android y Wobble como net8.0-android
+      - name: Workload android y paquete MonoGame para Android (version = hipotesis)
         run: |
           set +e
           dotnet workload install android 2>&1 | tee android-workload.log
-          sed -i 's#<TargetFramework>net8.0</TargetFramework>#<TargetFramework>net8.0-android</TargetFramework>#' Wobble/Wobble/Wobble.csproj
           dotnet add Wobble/Wobble/Wobble.csproj package MonoGame.Framework.Android --version 3.8.1.303 2>&1 | tee -a android-workload.log
-      - name: Build Wobble (net8.0-android), guarda todos los errores
+      - name: Build Wobble (net8.0-android)
         run: |
           set +e
           dotnet build Wobble/Wobble/Wobble.csproj -f net8.0-android 2>&1 | tee build-android-wobble.log
           echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" | tee -a build-android-wobble.log
+      - name: Build Quaver.Shared (net8.0-android)
+        run: |
+          set +e
+          dotnet build Quaver.Shared/Quaver.Shared.csproj -f net8.0-android 2>&1 | tee build-android-shared.log
+          echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" | tee -a build-android-shared.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: probe-android-wobble-logs
+          name: probe-android-logs
           path: |
             android-workload.log
             build-android-wobble.log
+            build-android-shared.log
