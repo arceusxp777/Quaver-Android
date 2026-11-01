@@ -190,6 +190,25 @@ jobs:
               wg.write_text(t.replace(old, "if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && !OperatingSystem.IsAndroid())"), encoding="utf-8")
               print("android: WobbleGame.cs excluye Android del dlopen(libdl.so.2)")
 
+              # Los binarios nativos de escritorio se BORRAN del checkout (solo en esta sonda): ni 'None Update' ni
+              # 'None Remove' lograron evitar XA4301 en CI (rondas 3-4). Quaver.Server.Client.dll es gestionada: se conserva.
+              import shutil
+              x64 = root / "Wobble" / "Wobble" / "x64"
+              if not x64.is_dir(): sys.exit("PATCH FALLIDO (--android): no existe Wobble/Wobble/x64")
+              shutil.rmtree(x64); print("android: borrado", x64.relative_to(root))
+              for base, pat in ((root / "Wobble" / "Wobble", "*.dylib"), (root / "Quaver.Shared", "libsteam_api.*"),
+                                (root / "Quaver.Shared", "steam_api*.dll")):
+                  for fl in sorted(base.glob(pat)):
+                      fl.unlink(); print("android: borrado", fl.relative_to(root))
+
+              # 24 avisos XA0101: contentFiles de MonoGame.Extended 3.8.0 (mgfxc, SharpDX...) no valen en Android.
+              wc = root / "Wobble" / "Wobble" / "Wobble.csproj"
+              t = wc.read_text(encoding="utf-8-sig")
+              old = '<PackageReference Include="MonoGame.Extended" Version="3.8.0" />'
+              if t.count(old) != 1: sys.exit("PATCH FALLIDO (--android): MonoGame.Extended 3.8.0 no encontrado")
+              wc.write_text(t.replace(old, '<PackageReference Include="MonoGame.Extended" Version="3.8.0" ExcludeAssets="contentFiles" />'), encoding="utf-8")
+              print("android: MonoGame.Extended sin contentFiles")
+
           PY
       - name: Paquete MonoGame upstream (version = hipotesis)
         run: dotnet add Wobble/Wobble/Wobble.csproj package MonoGame.Framework.DesktopGL --version 3.8.1.303
@@ -358,12 +377,41 @@ jobs:
               wg.write_text(t.replace(old, "if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && !OperatingSystem.IsAndroid())"), encoding="utf-8")
               print("android: WobbleGame.cs excluye Android del dlopen(libdl.so.2)")
 
+              # Los binarios nativos de escritorio se BORRAN del checkout (solo en esta sonda): ni 'None Update' ni
+              # 'None Remove' lograron evitar XA4301 en CI (rondas 3-4). Quaver.Server.Client.dll es gestionada: se conserva.
+              import shutil
+              x64 = root / "Wobble" / "Wobble" / "x64"
+              if not x64.is_dir(): sys.exit("PATCH FALLIDO (--android): no existe Wobble/Wobble/x64")
+              shutil.rmtree(x64); print("android: borrado", x64.relative_to(root))
+              for base, pat in ((root / "Wobble" / "Wobble", "*.dylib"), (root / "Quaver.Shared", "libsteam_api.*"),
+                                (root / "Quaver.Shared", "steam_api*.dll")):
+                  for fl in sorted(base.glob(pat)):
+                      fl.unlink(); print("android: borrado", fl.relative_to(root))
+
+              # 24 avisos XA0101: contentFiles de MonoGame.Extended 3.8.0 (mgfxc, SharpDX...) no valen en Android.
+              wc = root / "Wobble" / "Wobble" / "Wobble.csproj"
+              t = wc.read_text(encoding="utf-8-sig")
+              old = '<PackageReference Include="MonoGame.Extended" Version="3.8.0" />'
+              if t.count(old) != 1: sys.exit("PATCH FALLIDO (--android): MonoGame.Extended 3.8.0 no encontrado")
+              wc.write_text(t.replace(old, '<PackageReference Include="MonoGame.Extended" Version="3.8.0" ExcludeAssets="contentFiles" />'), encoding="utf-8")
+              print("android: MonoGame.Extended sin contentFiles")
+
           PY
       - name: Workload android y paquete MonoGame para Android (version = hipotesis)
         run: |
           set +e
           dotnet workload install android 2>&1 | tee android-workload.log
           dotnet add Wobble/Wobble/Wobble.csproj package MonoGame.Framework.Android --version 3.8.1.303 2>&1 | tee -a android-workload.log
+      - name: Evidencia del parche (diagnostico)
+        run: |
+          set +e
+          {
+            echo "== Wobble.csproj (final)"; tail -n 14 Wobble/Wobble/Wobble.csproj
+            echo "== binarios nativos restantes (fuera de bin/obj)"
+            find . -type f -not -path '*/bin/*' -not -path '*/obj/*' | grep -E '[.]so($|[.])|[.]dylib$'
+            echo "== items con .so segun MSBuild"
+            dotnet msbuild Wobble/Wobble/Wobble.csproj -getItem:None -getItem:Content -getItem:AndroidNativeLibrary 2>&1 | grep -iE '[.]so' | head -20
+          } 2>&1 | tee patch-evidence.log
       - name: Build Wobble (net8.0-android)
         run: |
           set +e
@@ -380,5 +428,6 @@ jobs:
           name: probe-android-logs
           path: |
             android-workload.log
+            patch-evidence.log
             build-android-wobble.log
             build-android-shared.log
