@@ -168,6 +168,15 @@ jobs:
                   t = p.read_text(encoding="utf-8-sig")
                   n = t.replace("<TargetFramework>net8.0</TargetFramework>", "<TargetFramework>net8.0-android</TargetFramework>")
                   n, removed = nat.subn("", n)
+                  # 'None Update' no saca los archivos del glob por defecto; el SDK de Android sigue viendo
+                  # los *.so como bibliotecas nativas sin ABI (XA4301). Se eliminan del glob (CI ronda 4).
+                  n = n.replace("</Project>", """  <ItemGroup>
+              <None Remove="x64/**" />
+              <None Remove="**/*.so" />
+              <None Remove="**/*.dylib" />
+              <None Remove="**/*.dll" />
+            </ItemGroup>
+          </Project>""")
                   if n == t: sys.exit(f"PATCH FALLIDO (--android): sin cambios en {rel}")
                   p.write_text(n, encoding="utf-8")
                   print(f"android: {rel} -> net8.0-android, {removed} items nativos quitados")
@@ -327,6 +336,15 @@ jobs:
                   t = p.read_text(encoding="utf-8-sig")
                   n = t.replace("<TargetFramework>net8.0</TargetFramework>", "<TargetFramework>net8.0-android</TargetFramework>")
                   n, removed = nat.subn("", n)
+                  # 'None Update' no saca los archivos del glob por defecto; el SDK de Android sigue viendo
+                  # los *.so como bibliotecas nativas sin ABI (XA4301). Se eliminan del glob (CI ronda 4).
+                  n = n.replace("</Project>", """  <ItemGroup>
+              <None Remove="x64/**" />
+              <None Remove="**/*.so" />
+              <None Remove="**/*.dylib" />
+              <None Remove="**/*.dll" />
+            </ItemGroup>
+          </Project>""")
                   if n == t: sys.exit(f"PATCH FALLIDO (--android): sin cambios en {rel}")
                   p.write_text(n, encoding="utf-8")
                   print(f"android: {rel} -> net8.0-android, {removed} items nativos quitados")
