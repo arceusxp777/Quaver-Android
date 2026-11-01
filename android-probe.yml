@@ -209,6 +209,37 @@ jobs:
               wc.write_text(t.replace(old, '<PackageReference Include="MonoGame.Extended" Version="3.8.0" ExcludeAssets="contentFiles" />'), encoding="utf-8")
               print("android: MonoGame.Extended sin contentFiles")
 
+              # 8) GameWindow.TextInput solo existe en MonoGame con #if WINDOWS/DESKTOPGL/ANGLE (verificado en el
+              #    codigo de GameWindow.cs); en Android da CS1061 (CI ronda 6: 4 usos). Evento estatico PROVISIONAL:
+              #    NO se dispara todavia, asi que no habra entrada de texto hasta conectar el teclado de Android.
+              (W / "Platform" / "TextInputCompat.cs").write_text('''using System;
+          using Microsoft.Xna.Framework;
+          using Microsoft.Xna.Framework.Input;
+
+          namespace Wobble.Platform
+          {
+              // PROVISIONAL (solo Android): sustituye GameWindow.TextInput. Sin origen de eventos todavia;
+              // la actividad de Android debera llamar a Raise(...) desde el teclado en pantalla.
+              public static class TextInputCompat
+              {
+                  public static event EventHandler<TextInputEventArgs> TextInput;
+
+                  public static void Raise(char character, Keys key = Keys.None) =>
+                      TextInput?.Invoke(null, new TextInputEventArgs(character, key));
+              }
+          }
+          ''', encoding="utf-8")
+              print("android: creado Wobble/Wobble/Platform/TextInputCompat.cs")
+              ti = re.compile(r"(?:(?:GameBase\.)?Game\.)?Window\.TextInput")
+              total = 0
+              for base in (root / "Wobble", root / "Quaver.Shared"):
+                  for fl in base.rglob("*.cs"):
+                      if fl.name == "TextInputCompat.cs": continue
+                      t = fl.read_text(encoding="utf-8-sig")
+                      n, c = ti.subn("Wobble.Platform.TextInputCompat.TextInput", t)
+                      if c: fl.write_text(n, encoding="utf-8"); total += c; print("android: TextInput ->", fl.relative_to(root), c)
+              if total != 4: sys.exit(f"PATCH FALLIDO (--android): se esperaban 4 usos de Window.TextInput y hay {total}")
+
           PY
       - name: Paquete MonoGame upstream (version = hipotesis)
         run: dotnet add Wobble/Wobble/Wobble.csproj package MonoGame.Framework.DesktopGL --version 3.8.1.303
@@ -395,6 +426,37 @@ jobs:
               if t.count(old) != 1: sys.exit("PATCH FALLIDO (--android): MonoGame.Extended 3.8.0 no encontrado")
               wc.write_text(t.replace(old, '<PackageReference Include="MonoGame.Extended" Version="3.8.0" ExcludeAssets="contentFiles" />'), encoding="utf-8")
               print("android: MonoGame.Extended sin contentFiles")
+
+              # 8) GameWindow.TextInput solo existe en MonoGame con #if WINDOWS/DESKTOPGL/ANGLE (verificado en el
+              #    codigo de GameWindow.cs); en Android da CS1061 (CI ronda 6: 4 usos). Evento estatico PROVISIONAL:
+              #    NO se dispara todavia, asi que no habra entrada de texto hasta conectar el teclado de Android.
+              (W / "Platform" / "TextInputCompat.cs").write_text('''using System;
+          using Microsoft.Xna.Framework;
+          using Microsoft.Xna.Framework.Input;
+
+          namespace Wobble.Platform
+          {
+              // PROVISIONAL (solo Android): sustituye GameWindow.TextInput. Sin origen de eventos todavia;
+              // la actividad de Android debera llamar a Raise(...) desde el teclado en pantalla.
+              public static class TextInputCompat
+              {
+                  public static event EventHandler<TextInputEventArgs> TextInput;
+
+                  public static void Raise(char character, Keys key = Keys.None) =>
+                      TextInput?.Invoke(null, new TextInputEventArgs(character, key));
+              }
+          }
+          ''', encoding="utf-8")
+              print("android: creado Wobble/Wobble/Platform/TextInputCompat.cs")
+              ti = re.compile(r"(?:(?:GameBase\.)?Game\.)?Window\.TextInput")
+              total = 0
+              for base in (root / "Wobble", root / "Quaver.Shared"):
+                  for fl in base.rglob("*.cs"):
+                      if fl.name == "TextInputCompat.cs": continue
+                      t = fl.read_text(encoding="utf-8-sig")
+                      n, c = ti.subn("Wobble.Platform.TextInputCompat.TextInput", t)
+                      if c: fl.write_text(n, encoding="utf-8"); total += c; print("android: TextInput ->", fl.relative_to(root), c)
+              if total != 4: sys.exit(f"PATCH FALLIDO (--android): se esperaban 4 usos de Window.TextInput y hay {total}")
 
           PY
       - name: Workload android y paquete MonoGame para Android (version = hipotesis)
