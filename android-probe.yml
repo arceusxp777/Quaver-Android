@@ -30,38 +30,6 @@ jobs:
           echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" | tee -a ../build.log
       - name: Tests de Quaver.API (net6.0 -> roll-forward al runtime disponible)
         continue-on-error: true
-# Sondas de diagnostico (NO generan APK). Ejecutar a mano desde Actions.
-#  baseline         : Quaver de escritorio tal cual, con los submodulos reales.
-#  upstream-patched : escritorio contra MonoGame UPSTREAM (NuGet) + parche PROVISIONAL.
-#  android-probe    : Wobble y Quaver.Shared como net8.0-android (solo para listar errores de C#).
-name: android-probe-v10
-
-on:
-  workflow_dispatch:
-
-jobs:
-  baseline:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.0.x
-      - name: Submodulos (como en el README, sin Server.Client)
-        run: git -c submodule."Quaver.Server.Client".update=none submodule update --init --recursive
-      - name: Versiones y commits efectivos
-        run: |
-          dotnet --info | tee versions.log
-          git submodule status | tee -a versions.log
-          git rev-parse HEAD | tee -a versions.log
-      - name: Build de escritorio (Debug)
-        run: |
-          set +e
-          cd Quaver
-          dotnet build 2>&1 | tee ../build.log
-          echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" | tee -a ../build.log
-      - name: Tests de Quaver.API (net6.0 -> roll-forward al runtime disponible)
-        continue-on-error: true
         env:
           DOTNET_ROLL_FORWARD: Major
         run: |
@@ -767,8 +735,9 @@ jobs:
         run: dotnet workload install android 2>&1 | tail -n 5
       - name: Crear app de humo (PROVISIONAL)
         run: |
-          mkdir -p android-smoke/Assets android-smoke/Resources/drawable
+          mkdir -p android-smoke/Assets android-smoke/Resources/drawable android-smoke/Resources/mipmap-xxxhdpi
           cp Quaver.Resources/Quaver.Resources/Icons/quaver-logo.png android-smoke/Resources/drawable/icon.png
+            cp Quaver.Resources/Quaver.Resources/Icons/quaver-logo.png android-smoke/Resources/mipmap-xxxhdpi/icon.png
           cp Quaver.Resources/Quaver.Resources/Maps/Offset/offset.qua android-smoke/Assets/test.qua
           cat > android-smoke/QuaverAndroidSmoke.csproj <<'XMLEOF'
           <Project Sdk="Microsoft.NET.Sdk">
@@ -794,9 +763,7 @@ jobs:
             <ItemGroup>
               <PackageReference Include="MonoGame.Framework.Android" Version="3.8.1.303" />
             </ItemGroup>
-            <ItemGroup>
-              <AndroidResource Include="Resources/**" />
-            </ItemGroup>
+
             <ItemGroup Condition="'$(WithApi)' == 'true'">
               <ProjectReference Include="../Quaver.API/Quaver.API/Quaver.API.csproj" />
             </ItemGroup>
@@ -1320,7 +1287,6 @@ jobs:
               <ProjectReference Include="../Wobble/Wobble.Resources/Wobble.Resources.csproj" />
             </ItemGroup>
             <ItemGroup>
-              <AndroidResource Include="Resources/**" />
               <AndroidAsset Include="../Quaver.Shared/Content/**/*" Link="Assets/Content/%(RecursiveDir)%(Filename)%(Extension)" />
             </ItemGroup>
             <ItemGroup Condition="Exists('native/arm64-v8a/libbass.so')">
