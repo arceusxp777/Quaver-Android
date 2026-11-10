@@ -303,6 +303,77 @@ jobs:
                   lg.write_text(t.replace(old, 'Path.Join(global::Wobble.WobbleGame.WorkingDirectory, "Logs")'), encoding="utf-8")
                   print("android: Logger usa WobbleGame.WorkingDirectory")
 
+              # 14) ROBUSTEZ TEXTURAS: AssetLoader.LoadTexture2D devuelve textura blanca 1x1 si data es nulo en lugar de colgar el juego
+              al = W / "Assets" / "AssetLoader.cs"
+              t_al = al.read_text(encoding="utf-8-sig")
+              old_al = """        public static Texture2D LoadTexture2D(byte[] data)
+        {
+            using (var stream = new MemoryStream(data))
+                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);
+        }"""
+              new_al = """        public static Texture2D LoadTexture2D(byte[] data)
+        {
+            if (data == null || data.Length == 0)
+            {
+                var fallback = new Texture2D(GameBase.Game.GraphicsDevice, 1, 1);
+                fallback.SetData(new[] { Color.White });
+                return fallback;
+            }
+
+            using (var stream = new MemoryStream(data))
+                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);
+        }"""
+              if t_al.count(old_al) == 1:
+                  al.write_text(t_al.replace(old_al, new_al), encoding="utf-8")
+                  print("android: AssetLoader con fallback seguro para texturas nulas")
+
+              # 15) ROBUSTEZ AUDIO: AudioManager no debe colgar el juego completo con AudioEngineException si BASS falla en Android
+              am = W / "Audio" / "AudioManager.cs"
+              t_am = am.read_text(encoding="utf-8-sig")
+              old_am = 'throw new AudioEngineException("Quaver could not find an audio output device. Please connect or enable an audio output device and restart the game.");'
+              new_am = 'if (!OperatingSystem.IsAndroid())
+                    throw new AudioEngineException("Quaver could not find an audio output device. Please connect or enable an audio output device and restart the game.");'
+              if t_am.count(old_am) == 1:
+                  am.write_text(t_am.replace(old_am, new_am), encoding="utf-8")
+                  print("android: AudioManager tolera fallo de audio sin cerrar la app")
+
+              # 16) ROBUSTEZ IMPORTADOR: MapsetImporter.WatchForChanges no debe lanzar excepcion en carpetas inexistentes de Android
+              mi = root / "Quaver.Shared" / "Database" / "Maps" / "MapsetImporter.cs"
+              t_mi = mi.read_text(encoding="utf-8-sig")
+              old_mi = "internal static void WatchForChanges()\n        {"
+              new_mi = "internal static void WatchForChanges()\n        {\n            if (OperatingSystem.IsAndroid()) return;\n"
+              if t_mi.count(old_mi) == 1:
+                  mi.write_text(t_mi.replace(old_mi, new_mi), encoding="utf-8")
+                  print("android: MapsetImporter omite FileSystemWatcher de escritorio")
+
+              # 17) ROBUSTEZ PANTALLA: QuaverGame.Initialize no debe forzar resolucion fija de escritorio (1366x768) en Android
+              qg = root / "Quaver.Shared" / "QuaverGame.cs"
+              t_qg = qg.read_text(encoding="utf-8-sig")
+              old_qg = """            ChangeResolution();
+
+            // Don't change the actual display mode. Especially considering our support for arbitrary resolutions, this
+            // can lead to completely locking up user's session (on Linux).
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                Graphics.HardwareModeSwitch = false;
+
+            // Apply all graphics changes
+            Graphics.ApplyChanges();"""
+              new_qg = """            if (!OperatingSystem.IsAndroid())
+            {
+                ChangeResolution();
+
+                // Don't change the actual display mode. Especially considering our support for arbitrary resolutions, this
+                // can lead to completely locking up user's session (on Linux).
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                    Graphics.HardwareModeSwitch = false;
+
+                // Apply all graphics changes
+                Graphics.ApplyChanges();
+            }"""
+              if t_qg.count(old_qg) == 1:
+                  qg.write_text(t_qg.replace(old_qg, new_qg), encoding="utf-8")
+                  print("android: QuaverGame omite ChangeResolution de escritorio en Android")
+
           PY
       - name: Paquete MonoGame upstream (version = hipotesis)
         run: dotnet add Wobble/Wobble/Wobble.csproj package MonoGame.Framework.DesktopGL --version 3.8.1.303
@@ -586,6 +657,77 @@ jobs:
                   lg.write_text(t.replace(old, 'Path.Join(global::Wobble.WobbleGame.WorkingDirectory, "Logs")'), encoding="utf-8")
                   print("android: Logger usa WobbleGame.WorkingDirectory")
 
+              # 14) ROBUSTEZ TEXTURAS: AssetLoader.LoadTexture2D devuelve textura blanca 1x1 si data es nulo en lugar de colgar el juego
+              al = W / "Assets" / "AssetLoader.cs"
+              t_al = al.read_text(encoding="utf-8-sig")
+              old_al = """        public static Texture2D LoadTexture2D(byte[] data)
+        {
+            using (var stream = new MemoryStream(data))
+                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);
+        }"""
+              new_al = """        public static Texture2D LoadTexture2D(byte[] data)
+        {
+            if (data == null || data.Length == 0)
+            {
+                var fallback = new Texture2D(GameBase.Game.GraphicsDevice, 1, 1);
+                fallback.SetData(new[] { Color.White });
+                return fallback;
+            }
+
+            using (var stream = new MemoryStream(data))
+                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);
+        }"""
+              if t_al.count(old_al) == 1:
+                  al.write_text(t_al.replace(old_al, new_al), encoding="utf-8")
+                  print("android: AssetLoader con fallback seguro para texturas nulas")
+
+              # 15) ROBUSTEZ AUDIO: AudioManager no debe colgar el juego completo con AudioEngineException si BASS falla en Android
+              am = W / "Audio" / "AudioManager.cs"
+              t_am = am.read_text(encoding="utf-8-sig")
+              old_am = 'throw new AudioEngineException("Quaver could not find an audio output device. Please connect or enable an audio output device and restart the game.");'
+              new_am = 'if (!OperatingSystem.IsAndroid())
+                    throw new AudioEngineException("Quaver could not find an audio output device. Please connect or enable an audio output device and restart the game.");'
+              if t_am.count(old_am) == 1:
+                  am.write_text(t_am.replace(old_am, new_am), encoding="utf-8")
+                  print("android: AudioManager tolera fallo de audio sin cerrar la app")
+
+              # 16) ROBUSTEZ IMPORTADOR: MapsetImporter.WatchForChanges no debe lanzar excepcion en carpetas inexistentes de Android
+              mi = root / "Quaver.Shared" / "Database" / "Maps" / "MapsetImporter.cs"
+              t_mi = mi.read_text(encoding="utf-8-sig")
+              old_mi = "internal static void WatchForChanges()\n        {"
+              new_mi = "internal static void WatchForChanges()\n        {\n            if (OperatingSystem.IsAndroid()) return;\n"
+              if t_mi.count(old_mi) == 1:
+                  mi.write_text(t_mi.replace(old_mi, new_mi), encoding="utf-8")
+                  print("android: MapsetImporter omite FileSystemWatcher de escritorio")
+
+              # 17) ROBUSTEZ PANTALLA: QuaverGame.Initialize no debe forzar resolucion fija de escritorio (1366x768) en Android
+              qg = root / "Quaver.Shared" / "QuaverGame.cs"
+              t_qg = qg.read_text(encoding="utf-8-sig")
+              old_qg = """            ChangeResolution();
+
+            // Don't change the actual display mode. Especially considering our support for arbitrary resolutions, this
+            // can lead to completely locking up user's session (on Linux).
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                Graphics.HardwareModeSwitch = false;
+
+            // Apply all graphics changes
+            Graphics.ApplyChanges();"""
+              new_qg = """            if (!OperatingSystem.IsAndroid())
+            {
+                ChangeResolution();
+
+                // Don't change the actual display mode. Especially considering our support for arbitrary resolutions, this
+                // can lead to completely locking up user's session (on Linux).
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                    Graphics.HardwareModeSwitch = false;
+
+                // Apply all graphics changes
+                Graphics.ApplyChanges();
+            }"""
+              if t_qg.count(old_qg) == 1:
+                  qg.write_text(t_qg.replace(old_qg, new_qg), encoding="utf-8")
+                  print("android: QuaverGame omite ChangeResolution de escritorio en Android")
+
           PY
       - name: Workload android y paquete MonoGame para Android (version = hipotesis)
         run: |
@@ -649,7 +791,8 @@ jobs:
         run: dotnet workload install android 2>&1 | tail -n 5
       - name: Crear app de humo (PROVISIONAL)
         run: |
-          mkdir -p android-smoke/Assets
+          mkdir -p android-smoke/Assets android-smoke/Resources/drawable
+          cp Quaver.Resources/Quaver.Resources/Icons/quaver-logo.png android-smoke/Resources/drawable/icon.png
           cp Quaver.Resources/Quaver.Resources/Maps/Offset/offset.qua android-smoke/Assets/test.qua
           cat > android-smoke/QuaverAndroidSmoke.csproj <<'XMLEOF'
           <Project Sdk="Microsoft.NET.Sdk">
@@ -675,6 +818,9 @@ jobs:
             <ItemGroup>
               <PackageReference Include="MonoGame.Framework.Android" Version="3.8.1.303" />
             </ItemGroup>
+            <ItemGroup>
+              <AndroidResource Include="Resources/**" />
+            </ItemGroup>
             <ItemGroup Condition="'$(WithApi)' == 'true'">
               <ProjectReference Include="../Quaver.API/Quaver.API/Quaver.API.csproj" />
             </ItemGroup>
@@ -683,7 +829,7 @@ jobs:
           cat > android-smoke/AndroidManifest.xml <<'XMLEOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.communityport.quaverandroid.smoke">
-            <application android:label="Quaver Android (prueba)" android:allowBackup="false"></application>
+            <application android:label="Quaver Prueba" android:icon="@drawable/icon" android:allowBackup="false"></application>
           </manifest>
           XMLEOF
           cat > android-smoke/MainActivity.cs <<'CSEOF'
@@ -699,7 +845,7 @@ jobs:
           namespace QuaverAndroidSmoke
           {
               // PRUEBA DE HUMO (no es Quaver): actividad de MonoGame que muestra 4 columnas tactiles.
-              [Activity(Label = "Quaver Android (prueba)", MainLauncher = true, LaunchMode = LaunchMode.SingleInstance,
+              [Activity(Label = "Quaver Prueba", Icon = "@drawable/icon", MainLauncher = true, LaunchMode = LaunchMode.SingleInstance,
                   ScreenOrientation = ScreenOrientation.SensorLandscape,
                   ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.Keyboard | ConfigChanges.KeyboardHidden | ConfigChanges.ScreenSize)]
               public class MainActivity : AndroidGameActivity
@@ -1119,6 +1265,77 @@ jobs:
                   lg.write_text(t.replace(old, 'Path.Join(global::Wobble.WobbleGame.WorkingDirectory, "Logs")'), encoding="utf-8")
                   print("android: Logger usa WobbleGame.WorkingDirectory")
 
+              # 14) ROBUSTEZ TEXTURAS: AssetLoader.LoadTexture2D devuelve textura blanca 1x1 si data es nulo en lugar de colgar el juego
+              al = W / "Assets" / "AssetLoader.cs"
+              t_al = al.read_text(encoding="utf-8-sig")
+              old_al = """        public static Texture2D LoadTexture2D(byte[] data)
+        {
+            using (var stream = new MemoryStream(data))
+                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);
+        }"""
+              new_al = """        public static Texture2D LoadTexture2D(byte[] data)
+        {
+            if (data == null || data.Length == 0)
+            {
+                var fallback = new Texture2D(GameBase.Game.GraphicsDevice, 1, 1);
+                fallback.SetData(new[] { Color.White });
+                return fallback;
+            }
+
+            using (var stream = new MemoryStream(data))
+                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);
+        }"""
+              if t_al.count(old_al) == 1:
+                  al.write_text(t_al.replace(old_al, new_al), encoding="utf-8")
+                  print("android: AssetLoader con fallback seguro para texturas nulas")
+
+              # 15) ROBUSTEZ AUDIO: AudioManager no debe colgar el juego completo con AudioEngineException si BASS falla en Android
+              am = W / "Audio" / "AudioManager.cs"
+              t_am = am.read_text(encoding="utf-8-sig")
+              old_am = 'throw new AudioEngineException("Quaver could not find an audio output device. Please connect or enable an audio output device and restart the game.");'
+              new_am = 'if (!OperatingSystem.IsAndroid())
+                    throw new AudioEngineException("Quaver could not find an audio output device. Please connect or enable an audio output device and restart the game.");'
+              if t_am.count(old_am) == 1:
+                  am.write_text(t_am.replace(old_am, new_am), encoding="utf-8")
+                  print("android: AudioManager tolera fallo de audio sin cerrar la app")
+
+              # 16) ROBUSTEZ IMPORTADOR: MapsetImporter.WatchForChanges no debe lanzar excepcion en carpetas inexistentes de Android
+              mi = root / "Quaver.Shared" / "Database" / "Maps" / "MapsetImporter.cs"
+              t_mi = mi.read_text(encoding="utf-8-sig")
+              old_mi = "internal static void WatchForChanges()\n        {"
+              new_mi = "internal static void WatchForChanges()\n        {\n            if (OperatingSystem.IsAndroid()) return;\n"
+              if t_mi.count(old_mi) == 1:
+                  mi.write_text(t_mi.replace(old_mi, new_mi), encoding="utf-8")
+                  print("android: MapsetImporter omite FileSystemWatcher de escritorio")
+
+              # 17) ROBUSTEZ PANTALLA: QuaverGame.Initialize no debe forzar resolucion fija de escritorio (1366x768) en Android
+              qg = root / "Quaver.Shared" / "QuaverGame.cs"
+              t_qg = qg.read_text(encoding="utf-8-sig")
+              old_qg = """            ChangeResolution();
+
+            // Don't change the actual display mode. Especially considering our support for arbitrary resolutions, this
+            // can lead to completely locking up user's session (on Linux).
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                Graphics.HardwareModeSwitch = false;
+
+            // Apply all graphics changes
+            Graphics.ApplyChanges();"""
+              new_qg = """            if (!OperatingSystem.IsAndroid())
+            {
+                ChangeResolution();
+
+                // Don't change the actual display mode. Especially considering our support for arbitrary resolutions, this
+                // can lead to completely locking up user's session (on Linux).
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                    Graphics.HardwareModeSwitch = false;
+
+                // Apply all graphics changes
+                Graphics.ApplyChanges();
+            }"""
+              if t_qg.count(old_qg) == 1:
+                  qg.write_text(t_qg.replace(old_qg, new_qg), encoding="utf-8")
+                  print("android: QuaverGame omite ChangeResolution de escritorio en Android")
+
           PY
       - name: Workload android y paquete MonoGame para Android
         run: |
@@ -1127,7 +1344,9 @@ jobs:
           dotnet add Wobble/Wobble/Wobble.csproj package MonoGame.Framework.Android --version 3.8.1.303 2>&1 | tail -n 5
       - name: Crear cabecera Android (PROVISIONAL)
         run: |
-          mkdir -p android-head
+          mkdir -p android-head/Resources/drawable android-head/Resources/mipmap-xxxhdpi
+          cp Quaver.Resources/Quaver.Resources/Icons/quaver-logo.png android-head/Resources/drawable/icon.png
+          cp Quaver.Resources/Quaver.Resources/Icons/quaver-logo.png android-head/Resources/mipmap-xxxhdpi/icon.png
           cat > android-head/QuaverAndroid.csproj <<'XMLEOF'
           <Project Sdk="Microsoft.NET.Sdk">
             <PropertyGroup>
@@ -1137,8 +1356,8 @@ jobs:
               <AssemblyName>QuaverAndroid</AssemblyName>
               <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
               <ApplicationId>org.communityport.quaverandroid</ApplicationId>
-              <ApplicationVersion>1</ApplicationVersion>
-              <ApplicationDisplayVersion>0.0.1-dev</ApplicationDisplayVersion>
+              <ApplicationVersion>2</ApplicationVersion>
+              <ApplicationDisplayVersion>0.2.0-preview</ApplicationDisplayVersion>
               <RuntimeIdentifier>android-arm64</RuntimeIdentifier>
               <AndroidPackageFormat>apk</AndroidPackageFormat>
               <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
@@ -1149,8 +1368,11 @@ jobs:
             <ItemGroup>
               <PackageReference Include="MonoGame.Framework.Android" Version="3.8.1.303" />
               <ProjectReference Include="../Quaver.Shared/Quaver.Shared.csproj" />
+              <ProjectReference Include="../Quaver.Resources/Quaver.Resources.csproj" />
+              <ProjectReference Include="../Wobble/Wobble.Resources/Wobble.Resources.csproj" />
             </ItemGroup>
             <ItemGroup>
+              <AndroidResource Include="Resources/**" />
               <AndroidAsset Include="../Quaver.Shared/Content/**/*" Link="Assets/Content/%(RecursiveDir)%(Filename)%(Extension)" />
             </ItemGroup>
             <ItemGroup Condition="Exists('native/arm64-v8a/libbass.so')">
@@ -1164,7 +1386,7 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.communityport.quaverandroid">
             <uses-permission android:name="android.permission.INTERNET" />
             <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-            <application android:label="Quaver (comunitario)" android:allowBackup="false" android:extractNativeLibs="true"></application>
+            <application android:label="Quaver" android:icon="@drawable/icon" android:roundIcon="@drawable/icon" android:allowBackup="false" android:extractNativeLibs="true"></application>
           </manifest>
           XMLEOF
           cat > android-head/MainActivity.cs <<'CSEOF'
@@ -1184,7 +1406,7 @@ jobs:
               // PRIMERA CABECERA ANDROID de Quaver (comunitaria, NO oficial). PROVISIONAL: sin Steam, Discord,
               // IPC ni integracion nativa de escritorio. Si algo falla, muestra un informe copiable en pantalla.
               // Si el juego se queda colgado, pulsa BAJAR VOLUMEN para ver el registro de Quaver.
-              [Activity(Label = "Quaver (comunitario)", MainLauncher = true, LaunchMode = LaunchMode.SingleInstance,
+              [Activity(Label = "Quaver", Icon = "@drawable/icon", RoundIcon = "@drawable/icon", MainLauncher = true, LaunchMode = LaunchMode.SingleInstance,
                   ScreenOrientation = ScreenOrientation.SensorLandscape,
                   ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.Keyboard | ConfigChanges.KeyboardHidden | ConfigChanges.ScreenSize)]
               public class MainActivity : AndroidGameActivity
@@ -1198,6 +1420,28 @@ jobs:
                       var dataDir = FilesDir.AbsolutePath;
                       _crashFile = Path.Combine(dataDir, "informe-fallo.txt");
                       HookCrashHandlers();
+
+                      // Carga explicita de BASS nativo en Android
+                      try
+                      {
+                          Java.Lang.JavaSystem.LoadLibrary("bass");
+                          Java.Lang.JavaSystem.LoadLibrary("bass_fx");
+                          Android.Util.Log.Info("QuaverAndroid", "BASS nativo cargado con exito.");
+                      }
+                      catch (Exception ex)
+                      {
+                          Android.Util.Log.Warn("QuaverAndroid", "Aviso BASS LoadLibrary: " + ex.Message);
+                      }
+
+                      // Precargar ensamblados de recursos en el AppDomain
+                      try { System.Reflection.Assembly.Load(new System.Reflection.AssemblyName("Wobble.Resources")); } catch { }
+                      try { System.Reflection.Assembly.Load(new System.Reflection.AssemblyName("Quaver.Resources")); } catch { }
+
+                      // Crear carpetas requeridas por Quaver
+                      foreach (var dir in new[] { "Songs", "Skins", "Screenshots", "Replays", "Backup", "Logs" })
+                      {
+                          try { Directory.CreateDirectory(Path.Combine(dataDir, dir)); } catch { }
+                      }
 
                       // Si el proceso anterior murio, se muestra su informe antes de volver a intentarlo.
                       if (File.Exists(_crashFile))
@@ -1275,8 +1519,15 @@ jobs:
 
                   private void HookCrashHandlers()
                   {
-                      AppDomain.CurrentDomain.UnhandledException += (s, e) => WriteReport(e.ExceptionObject as Exception, "AppDomain");
-                      Android.Runtime.AndroidEnvironment.UnhandledExceptionRaiser += (s, e) => WriteReport(e.Exception, "Android");
+                      AppDomain.CurrentDomain.UnhandledException += (s, e) => {
+                          var ex = e.ExceptionObject as Exception;
+                          WriteReport(ex, "AppDomain");
+                          RunOnUiThread(() => ShowReport(ex != null ? ex.ToString() : "Error en AppDomain"));
+                      };
+                      Android.Runtime.AndroidEnvironment.UnhandledExceptionRaiser += (s, e) => {
+                          WriteReport(e.Exception, "Android");
+                          RunOnUiThread(() => ShowReport(e.Exception != null ? e.Exception.ToString() : "Error en AndroidEnvironment"));
+                      };
                   }
 
                   private void WriteReport(Exception ex, string origin)
