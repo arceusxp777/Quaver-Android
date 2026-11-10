@@ -2,11 +2,7 @@
 #  baseline         : Quaver de escritorio tal cual, con los submodulos reales.
 #  upstream-patched : escritorio contra MonoGame UPSTREAM (NuGet) + parche PROVISIONAL.
 #  android-probe    : Wobble y Quaver.Shared como net8.0-android (solo para listar errores de C#).
-# Sondas de diagnostico (NO generan APK). Ejecutar a mano desde Actions.
-#  baseline         : Quaver de escritorio tal cual, con los submodulos reales.
-#  upstream-patched : escritorio contra MonoGame UPSTREAM (NuGet) + parche PROVISIONAL.
-#  android-probe    : Wobble y Quaver.Shared como net8.0-android (solo para listar errores de C#).
-name: android-probe-v9
+name: android-probe-v11
 
 on:
   workflow_dispatch:
@@ -67,7 +63,7 @@ jobs:
           patron no se encuentra (p.ej. si el commit de Wobble cambia)."""
           import re, sys, pathlib
 
-          print("patch_upstream v9")
+          print("patch_upstream v10")
 
           root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
           W = root / "Wobble" / "Wobble"
@@ -271,6 +267,41 @@ jobs:
               else:
                   wgc.write_text(t.replace(wd_old, wd_new), encoding="utf-8")
                   print("android: WobbleGame.WorkingDirectory ahora es asignable")
+
+              # 11) RIESGO EN EJECUCION: WobbleGame() llama NativeAssemblies.Copy(), que hace Directory.GetFiles("<base>/x64/");
+              #     en Android ese directorio no existe (DirectoryNotFoundException al construir QuaverGame).
+              na = W / "Platform" / "NativeAssemblies.cs"
+              t = na.read_text(encoding="utf-8-sig")
+              old = "foreach (var file in Directory.GetFiles(NativeDirectory))"
+              if t.count(old) != 1:
+                  print(f"AVISO PATCH (--android): NativeAssemblies.Copy distinto de lo esperado ({t.count(old)})")
+              else:
+                  na.write_text(t.replace(old, "if (!Directory.Exists(NativeDirectory))\n                return;\n\n            foreach (var file in Directory.GetFiles(NativeDirectory))"), encoding="utf-8")
+                  print("android: NativeAssemblies.Copy no falla si no existe el directorio nativo")
+
+              # 12) RIESGO EN EJECUCION: DllResourceStore usa Assembly.LoadFrom(<ruta del ensamblado>\\x.dll). En Android los ensamblados
+              #     van dentro del APK (Location vacia): se cargan por nombre.
+              dr = W / "IO" / "DllResourceStore.cs"
+              t = dr.read_text(encoding="utf-8-sig")
+              old = "assembly = Assembly.LoadFrom(Path.Combine(Path.GetDirectoryName(Assembly.GetCallingAssembly().Location), dllName));"
+              if t.count(old) != 1:
+                  print(f"AVISO PATCH (--android): DllResourceStore distinto de lo esperado ({t.count(old)})")
+              else:
+                  new = ("assembly = OperatingSystem.IsAndroid()\n"
+                         "                ? Assembly.Load(new AssemblyName(Path.GetFileNameWithoutExtension(dllName)))\n"
+                         "                : Assembly.LoadFrom(Path.Combine(Path.GetDirectoryName(Assembly.GetCallingAssembly().Location), dllName));")
+                  dr.write_text(t.replace(old, new), encoding="utf-8")
+                  print("android: DllResourceStore carga ensamblados por nombre")
+
+              # 13) RIESGO EN EJECUCION: Logger escribe en <BaseDirectory>/Logs, que en Android puede no ser escribible.
+              lg = W / "Logging" / "Logger.cs"
+              t = lg.read_text(encoding="utf-8-sig")
+              old = 'Path.Join(AppDomain.CurrentDomain.BaseDirectory, "Logs")'
+              if t.count(old) != 1:
+                  print(f"AVISO PATCH (--android): Logger.LogsFolder distinto de lo esperado ({t.count(old)})")
+              else:
+                  lg.write_text(t.replace(old, 'Path.Join(global::Wobble.WobbleGame.WorkingDirectory, "Logs")'), encoding="utf-8")
+                  print("android: Logger usa WobbleGame.WorkingDirectory")
 
           PY
       - name: Paquete MonoGame upstream (version = hipotesis)
@@ -315,7 +346,7 @@ jobs:
           patron no se encuentra (p.ej. si el commit de Wobble cambia)."""
           import re, sys, pathlib
 
-          print("patch_upstream v9")
+          print("patch_upstream v10")
 
           root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
           W = root / "Wobble" / "Wobble"
@@ -520,6 +551,41 @@ jobs:
                   wgc.write_text(t.replace(wd_old, wd_new), encoding="utf-8")
                   print("android: WobbleGame.WorkingDirectory ahora es asignable")
 
+              # 11) RIESGO EN EJECUCION: WobbleGame() llama NativeAssemblies.Copy(), que hace Directory.GetFiles("<base>/x64/");
+              #     en Android ese directorio no existe (DirectoryNotFoundException al construir QuaverGame).
+              na = W / "Platform" / "NativeAssemblies.cs"
+              t = na.read_text(encoding="utf-8-sig")
+              old = "foreach (var file in Directory.GetFiles(NativeDirectory))"
+              if t.count(old) != 1:
+                  print(f"AVISO PATCH (--android): NativeAssemblies.Copy distinto de lo esperado ({t.count(old)})")
+              else:
+                  na.write_text(t.replace(old, "if (!Directory.Exists(NativeDirectory))\n                return;\n\n            foreach (var file in Directory.GetFiles(NativeDirectory))"), encoding="utf-8")
+                  print("android: NativeAssemblies.Copy no falla si no existe el directorio nativo")
+
+              # 12) RIESGO EN EJECUCION: DllResourceStore usa Assembly.LoadFrom(<ruta del ensamblado>\\x.dll). En Android los ensamblados
+              #     van dentro del APK (Location vacia): se cargan por nombre.
+              dr = W / "IO" / "DllResourceStore.cs"
+              t = dr.read_text(encoding="utf-8-sig")
+              old = "assembly = Assembly.LoadFrom(Path.Combine(Path.GetDirectoryName(Assembly.GetCallingAssembly().Location), dllName));"
+              if t.count(old) != 1:
+                  print(f"AVISO PATCH (--android): DllResourceStore distinto de lo esperado ({t.count(old)})")
+              else:
+                  new = ("assembly = OperatingSystem.IsAndroid()\n"
+                         "                ? Assembly.Load(new AssemblyName(Path.GetFileNameWithoutExtension(dllName)))\n"
+                         "                : Assembly.LoadFrom(Path.Combine(Path.GetDirectoryName(Assembly.GetCallingAssembly().Location), dllName));")
+                  dr.write_text(t.replace(old, new), encoding="utf-8")
+                  print("android: DllResourceStore carga ensamblados por nombre")
+
+              # 13) RIESGO EN EJECUCION: Logger escribe en <BaseDirectory>/Logs, que en Android puede no ser escribible.
+              lg = W / "Logging" / "Logger.cs"
+              t = lg.read_text(encoding="utf-8-sig")
+              old = 'Path.Join(AppDomain.CurrentDomain.BaseDirectory, "Logs")'
+              if t.count(old) != 1:
+                  print(f"AVISO PATCH (--android): Logger.LogsFolder distinto de lo esperado ({t.count(old)})")
+              else:
+                  lg.write_text(t.replace(old, 'Path.Join(global::Wobble.WobbleGame.WorkingDirectory, "Logs")'), encoding="utf-8")
+                  print("android: Logger usa WobbleGame.WorkingDirectory")
+
           PY
       - name: Workload android y paquete MonoGame para Android (version = hipotesis)
         run: |
@@ -530,9 +596,9 @@ jobs:
         run: |
           set +e
           {
-            echo "WORKFLOW_VERSION=v9"
+            echo "WORKFLOW_VERSION=v10"
             echo "== Wobble.csproj (final)"; tail -n 14 Wobble/Wobble/Wobble.csproj
-            echo "== marca del parche v9 (debe listar archivos)"; grep -rl 'TextInputCompat' Wobble Quaver.Shared --include=*.cs | head -5
+            echo "== marca del parche v10 (debe listar archivos)"; grep -rl 'TextInputCompat' Wobble Quaver.Shared --include=*.cs | head -5
             echo "== binarios nativos restantes (fuera de bin/obj)"
             find . -type f -not -path '*/bin/*' -not -path '*/obj/*' | grep -E '[.]so($|[.])|[.]dylib$'
             echo "== items con .so segun MSBuild"
@@ -813,7 +879,7 @@ jobs:
           patron no se encuentra (p.ej. si el commit de Wobble cambia)."""
           import re, sys, pathlib
 
-          print("patch_upstream v9")
+          print("patch_upstream v10")
 
           root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
           W = root / "Wobble" / "Wobble"
@@ -1018,6 +1084,41 @@ jobs:
                   wgc.write_text(t.replace(wd_old, wd_new), encoding="utf-8")
                   print("android: WobbleGame.WorkingDirectory ahora es asignable")
 
+              # 11) RIESGO EN EJECUCION: WobbleGame() llama NativeAssemblies.Copy(), que hace Directory.GetFiles("<base>/x64/");
+              #     en Android ese directorio no existe (DirectoryNotFoundException al construir QuaverGame).
+              na = W / "Platform" / "NativeAssemblies.cs"
+              t = na.read_text(encoding="utf-8-sig")
+              old = "foreach (var file in Directory.GetFiles(NativeDirectory))"
+              if t.count(old) != 1:
+                  print(f"AVISO PATCH (--android): NativeAssemblies.Copy distinto de lo esperado ({t.count(old)})")
+              else:
+                  na.write_text(t.replace(old, "if (!Directory.Exists(NativeDirectory))\n                return;\n\n            foreach (var file in Directory.GetFiles(NativeDirectory))"), encoding="utf-8")
+                  print("android: NativeAssemblies.Copy no falla si no existe el directorio nativo")
+
+              # 12) RIESGO EN EJECUCION: DllResourceStore usa Assembly.LoadFrom(<ruta del ensamblado>\\x.dll). En Android los ensamblados
+              #     van dentro del APK (Location vacia): se cargan por nombre.
+              dr = W / "IO" / "DllResourceStore.cs"
+              t = dr.read_text(encoding="utf-8-sig")
+              old = "assembly = Assembly.LoadFrom(Path.Combine(Path.GetDirectoryName(Assembly.GetCallingAssembly().Location), dllName));"
+              if t.count(old) != 1:
+                  print(f"AVISO PATCH (--android): DllResourceStore distinto de lo esperado ({t.count(old)})")
+              else:
+                  new = ("assembly = OperatingSystem.IsAndroid()\n"
+                         "                ? Assembly.Load(new AssemblyName(Path.GetFileNameWithoutExtension(dllName)))\n"
+                         "                : Assembly.LoadFrom(Path.Combine(Path.GetDirectoryName(Assembly.GetCallingAssembly().Location), dllName));")
+                  dr.write_text(t.replace(old, new), encoding="utf-8")
+                  print("android: DllResourceStore carga ensamblados por nombre")
+
+              # 13) RIESGO EN EJECUCION: Logger escribe en <BaseDirectory>/Logs, que en Android puede no ser escribible.
+              lg = W / "Logging" / "Logger.cs"
+              t = lg.read_text(encoding="utf-8-sig")
+              old = 'Path.Join(AppDomain.CurrentDomain.BaseDirectory, "Logs")'
+              if t.count(old) != 1:
+                  print(f"AVISO PATCH (--android): Logger.LogsFolder distinto de lo esperado ({t.count(old)})")
+              else:
+                  lg.write_text(t.replace(old, 'Path.Join(global::Wobble.WobbleGame.WorkingDirectory, "Logs")'), encoding="utf-8")
+                  print("android: Logger usa WobbleGame.WorkingDirectory")
+
           PY
       - name: Workload android y paquete MonoGame para Android
         run: |
@@ -1048,6 +1149,7 @@ jobs:
             <ItemGroup>
               <PackageReference Include="MonoGame.Framework.Android" Version="3.8.1.303" />
               <ProjectReference Include="../Quaver.Shared/Quaver.Shared.csproj" />
+              <ProjectReference Include="../Quaver.Resources/Quaver.Resources.csproj" />
             </ItemGroup>
             <ItemGroup>
               <AndroidAsset Include="../Quaver.Shared/Content/**/*" Link="Assets/Content/%(RecursiveDir)%(Filename)%(Extension)" />
@@ -1082,6 +1184,7 @@ jobs:
           {
               // PRIMERA CABECERA ANDROID de Quaver (comunitaria, NO oficial). PROVISIONAL: sin Steam, Discord,
               // IPC ni integracion nativa de escritorio. Si algo falla, muestra un informe copiable en pantalla.
+              // Si el juego se queda colgado, pulsa BAJAR VOLUMEN para ver el registro de Quaver.
               [Activity(Label = "Quaver (comunitario)", MainLauncher = true, LaunchMode = LaunchMode.SingleInstance,
                   ScreenOrientation = ScreenOrientation.SensorLandscape,
                   ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.Keyboard | ConfigChanges.KeyboardHidden | ConfigChanges.ScreenSize)]
@@ -1120,6 +1223,8 @@ jobs:
                       Wobble.WobbleGame.WorkingDirectory = workDir;
                       Directory.SetCurrentDirectory(workDir);
 
+                      InitSqlite();
+
                       Wobble.Logging.Logger.Initialize();
                       Quaver.Shared.Config.ConfigManager.Initialize();
                       Quaver.Shared.Config.StructuredConfigManager.Initialize();
@@ -1131,6 +1236,42 @@ jobs:
                       var game = new Quaver.Shared.QuaverGame();
                       SetContentView((View)game.Services.GetService(typeof(View)));
                       game.Run();
+                  }
+
+                  // sqlite-net necesita el proveedor SQLitePCLRaw inicializado en Android. Se llama por reflexion
+                  // para no depender en compilacion de ese ensamblado.
+                  private static void InitSqlite()
+                  {
+                      try
+                      {
+                          var type = Type.GetType("SQLitePCL.Batteries_V2, SQLitePCLRaw.batteries_v2");
+                          var init = type == null ? null : type.GetMethod("Init", Type.EmptyTypes);
+                          if (init != null)
+                              init.Invoke(null, null);
+                      }
+                      catch (Exception e)
+                      {
+                          Android.Util.Log.Warn("QuaverAndroid", "SQLitePCL: " + e);
+                      }
+                  }
+
+                  public override bool OnKeyDown(Keycode keyCode, KeyEvent e)
+                  {
+                      if (keyCode == Keycode.VolumeDown)
+                      {
+                          try
+                          {
+                              ShowReport(BuildLogText());
+                          }
+                          catch (Exception ex)
+                          {
+                              Android.Util.Log.Error("QuaverAndroid", ex.ToString());
+                          }
+
+                          return true;
+                      }
+
+                      return base.OnKeyDown(keyCode, e);
                   }
 
                   private void HookCrashHandlers()
@@ -1159,12 +1300,53 @@ jobs:
                       }
                   }
 
+                  private static string ReadShared(string path)
+                  {
+                      using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                      using (var sr = new StreamReader(fs))
+                          return sr.ReadToEnd();
+                  }
+
+                  private string BuildLogText()
+                  {
+                      var sb = new StringBuilder();
+                      sb.AppendLine("Registro de Quaver (ultimas lineas de cada archivo)");
+
+                      var dir = Path.Combine(FilesDir.AbsolutePath, "Logs");
+                      if (!Directory.Exists(dir))
+                      {
+                          sb.AppendLine("(no existe la carpeta de registros: " + dir + ")");
+                          return sb.ToString();
+                      }
+
+                      foreach (var file in Directory.GetFiles(dir, "*.log"))
+                      {
+                          string[] lines;
+                          try
+                          {
+                              lines = ReadShared(file).Split(new[] { Convert.ToChar(10) });
+                          }
+                          catch (Exception e)
+                          {
+                              sb.AppendLine("No se pudo leer " + file + ": " + e.Message);
+                              continue;
+                          }
+
+                          sb.AppendLine();
+                          sb.AppendLine("=== " + Path.GetFileName(file) + " (" + lines.Length + " lineas) ===");
+                          for (var i = Math.Max(0, lines.Length - 120); i < lines.Length; i++)
+                              sb.AppendLine(lines[i].TrimEnd(Convert.ToChar(13)));
+                      }
+
+                      return sb.ToString();
+                  }
+
                   private void ShowReport(string text)
                   {
                       var layout = new LinearLayout(this) { Orientation = Orientation.Vertical };
                       layout.SetPadding(32, 32, 32, 32);
 
-                      var title = new TextView(this) { Text = "Quaver Android: informe del ultimo fallo" };
+                      var title = new TextView(this) { Text = "Quaver Android: informe" };
                       title.TextSize = 18;
 
                       var copy = new Button(this) { Text = "Copiar informe" };
