@@ -30,6 +30,38 @@ jobs:
           echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" | tee -a ../build.log
       - name: Tests de Quaver.API (net6.0 -> roll-forward al runtime disponible)
         continue-on-error: true
+# Sondas de diagnostico (NO generan APK). Ejecutar a mano desde Actions.
+#  baseline         : Quaver de escritorio tal cual, con los submodulos reales.
+#  upstream-patched : escritorio contra MonoGame UPSTREAM (NuGet) + parche PROVISIONAL.
+#  android-probe    : Wobble y Quaver.Shared como net8.0-android (solo para listar errores de C#).
+name: android-probe-v10
+
+on:
+  workflow_dispatch:
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Submodulos (como en el README, sin Server.Client)
+        run: git -c submodule."Quaver.Server.Client".update=none submodule update --init --recursive
+      - name: Versiones y commits efectivos
+        run: |
+          dotnet --info | tee versions.log
+          git submodule status | tee -a versions.log
+          git rev-parse HEAD | tee -a versions.log
+      - name: Build de escritorio (Debug)
+        run: |
+          set +e
+          cd Quaver
+          dotnet build 2>&1 | tee ../build.log
+          echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" | tee -a ../build.log
+      - name: Tests de Quaver.API (net6.0 -> roll-forward al runtime disponible)
+        continue-on-error: true
         env:
           DOTNET_ROLL_FORWARD: Major
         run: |
@@ -302,32 +334,19 @@ jobs:
               else:
                   lg.write_text(t.replace(old, 'Path.Join(global::Wobble.WobbleGame.WorkingDirectory, "Logs")'), encoding="utf-8")
                   print("android: Logger usa WobbleGame.WorkingDirectory")
-
-              # 14) ROBUSTEZ TEXTURAS: AssetLoader.LoadTexture2D devuelve textura blanca 1x1 si data es nulo en lugar de colgar el juego
+              # 14) ROBUSTEZ TEXTURAS: AssetLoader con fallback blanco 1x1 si la textura es nula
               al = W / "Assets" / "AssetLoader.cs"
               t_al = al.read_text(encoding="utf-8-sig")
-              old_al = """        public static Texture2D LoadTexture2D(byte[] data)
-        {
+              old_al = "using (var stream = new MemoryStream(data))
+                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);"
+              new_al = "if (data == null || data.Length == 0) { var fb = new Texture2D(GameBase.Game.GraphicsDevice, 1, 1); fb.SetData(new[] { Color.White }); return fb; }
             using (var stream = new MemoryStream(data))
-                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);
-        }"""
-              new_al = """        public static Texture2D LoadTexture2D(byte[] data)
-        {
-            if (data == null || data.Length == 0)
-            {
-                var fallback = new Texture2D(GameBase.Game.GraphicsDevice, 1, 1);
-                fallback.SetData(new[] { Color.White });
-                return fallback;
-            }
-
-            using (var stream = new MemoryStream(data))
-                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);
-        }"""
+                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);"
               if t_al.count(old_al) == 1:
                   al.write_text(t_al.replace(old_al, new_al), encoding="utf-8")
                   print("android: AssetLoader con fallback seguro para texturas nulas")
 
-              # 15) ROBUSTEZ AUDIO: AudioManager no debe colgar el juego completo con AudioEngineException si BASS falla en Android
+              # 15) ROBUSTEZ AUDIO: AudioManager tolera fallo de audio sin cerrar la app en Android
               am = W / "Audio" / "AudioManager.cs"
               t_am = am.read_text(encoding="utf-8-sig")
               old_am = 'throw new AudioEngineException("Quaver could not find an audio output device. Please connect or enable an audio output device and restart the game.");'
@@ -335,9 +354,9 @@ jobs:
                     throw new AudioEngineException("Quaver could not find an audio output device. Please connect or enable an audio output device and restart the game.");'
               if t_am.count(old_am) == 1:
                   am.write_text(t_am.replace(old_am, new_am), encoding="utf-8")
-                  print("android: AudioManager tolera fallo de audio sin cerrar la app")
+                  print("android: AudioManager tolera fallo de audio")
 
-              # 16) ROBUSTEZ IMPORTADOR: MapsetImporter.WatchForChanges no debe lanzar excepcion en carpetas inexistentes de Android
+              # 16) ROBUSTEZ IMPORTADOR: MapsetImporter omite FileSystemWatcher de escritorio en Android
               mi = root / "Quaver.Shared" / "Database" / "Maps" / "MapsetImporter.cs"
               t_mi = mi.read_text(encoding="utf-8-sig")
               old_mi = "internal static void WatchForChanges()\n        {"
@@ -346,30 +365,15 @@ jobs:
                   mi.write_text(t_mi.replace(old_mi, new_mi), encoding="utf-8")
                   print("android: MapsetImporter omite FileSystemWatcher de escritorio")
 
-              # 17) ROBUSTEZ PANTALLA: QuaverGame.Initialize no debe forzar resolucion fija de escritorio (1366x768) en Android
+              # 17) ROBUSTEZ PANTALLA: QuaverGame omite ChangeResolution fijo en Android
               qg = root / "Quaver.Shared" / "QuaverGame.cs"
               t_qg = qg.read_text(encoding="utf-8-sig")
-              old_qg = """            ChangeResolution();
+              old_qg = "ChangeResolution();
 
-            // Don't change the actual display mode. Especially considering our support for arbitrary resolutions, this
-            // can lead to completely locking up user's session (on Linux).
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                Graphics.HardwareModeSwitch = false;
+            // Don't change the actual display mode."
+              new_qg = "if (!OperatingSystem.IsAndroid()) { ChangeResolution(); }
 
-            // Apply all graphics changes
-            Graphics.ApplyChanges();"""
-              new_qg = """            if (!OperatingSystem.IsAndroid())
-            {
-                ChangeResolution();
-
-                // Don't change the actual display mode. Especially considering our support for arbitrary resolutions, this
-                // can lead to completely locking up user's session (on Linux).
-                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                    Graphics.HardwareModeSwitch = false;
-
-                // Apply all graphics changes
-                Graphics.ApplyChanges();
-            }"""
+            // Don't change the actual display mode."
               if t_qg.count(old_qg) == 1:
                   qg.write_text(t_qg.replace(old_qg, new_qg), encoding="utf-8")
                   print("android: QuaverGame omite ChangeResolution de escritorio en Android")
@@ -656,32 +660,19 @@ jobs:
               else:
                   lg.write_text(t.replace(old, 'Path.Join(global::Wobble.WobbleGame.WorkingDirectory, "Logs")'), encoding="utf-8")
                   print("android: Logger usa WobbleGame.WorkingDirectory")
-
-              # 14) ROBUSTEZ TEXTURAS: AssetLoader.LoadTexture2D devuelve textura blanca 1x1 si data es nulo en lugar de colgar el juego
+              # 14) ROBUSTEZ TEXTURAS: AssetLoader con fallback blanco 1x1 si la textura es nula
               al = W / "Assets" / "AssetLoader.cs"
               t_al = al.read_text(encoding="utf-8-sig")
-              old_al = """        public static Texture2D LoadTexture2D(byte[] data)
-        {
+              old_al = "using (var stream = new MemoryStream(data))
+                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);"
+              new_al = "if (data == null || data.Length == 0) { var fb = new Texture2D(GameBase.Game.GraphicsDevice, 1, 1); fb.SetData(new[] { Color.White }); return fb; }
             using (var stream = new MemoryStream(data))
-                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);
-        }"""
-              new_al = """        public static Texture2D LoadTexture2D(byte[] data)
-        {
-            if (data == null || data.Length == 0)
-            {
-                var fallback = new Texture2D(GameBase.Game.GraphicsDevice, 1, 1);
-                fallback.SetData(new[] { Color.White });
-                return fallback;
-            }
-
-            using (var stream = new MemoryStream(data))
-                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);
-        }"""
+                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);"
               if t_al.count(old_al) == 1:
                   al.write_text(t_al.replace(old_al, new_al), encoding="utf-8")
                   print("android: AssetLoader con fallback seguro para texturas nulas")
 
-              # 15) ROBUSTEZ AUDIO: AudioManager no debe colgar el juego completo con AudioEngineException si BASS falla en Android
+              # 15) ROBUSTEZ AUDIO: AudioManager tolera fallo de audio sin cerrar la app en Android
               am = W / "Audio" / "AudioManager.cs"
               t_am = am.read_text(encoding="utf-8-sig")
               old_am = 'throw new AudioEngineException("Quaver could not find an audio output device. Please connect or enable an audio output device and restart the game.");'
@@ -689,9 +680,9 @@ jobs:
                     throw new AudioEngineException("Quaver could not find an audio output device. Please connect or enable an audio output device and restart the game.");'
               if t_am.count(old_am) == 1:
                   am.write_text(t_am.replace(old_am, new_am), encoding="utf-8")
-                  print("android: AudioManager tolera fallo de audio sin cerrar la app")
+                  print("android: AudioManager tolera fallo de audio")
 
-              # 16) ROBUSTEZ IMPORTADOR: MapsetImporter.WatchForChanges no debe lanzar excepcion en carpetas inexistentes de Android
+              # 16) ROBUSTEZ IMPORTADOR: MapsetImporter omite FileSystemWatcher de escritorio en Android
               mi = root / "Quaver.Shared" / "Database" / "Maps" / "MapsetImporter.cs"
               t_mi = mi.read_text(encoding="utf-8-sig")
               old_mi = "internal static void WatchForChanges()\n        {"
@@ -700,30 +691,15 @@ jobs:
                   mi.write_text(t_mi.replace(old_mi, new_mi), encoding="utf-8")
                   print("android: MapsetImporter omite FileSystemWatcher de escritorio")
 
-              # 17) ROBUSTEZ PANTALLA: QuaverGame.Initialize no debe forzar resolucion fija de escritorio (1366x768) en Android
+              # 17) ROBUSTEZ PANTALLA: QuaverGame omite ChangeResolution fijo en Android
               qg = root / "Quaver.Shared" / "QuaverGame.cs"
               t_qg = qg.read_text(encoding="utf-8-sig")
-              old_qg = """            ChangeResolution();
+              old_qg = "ChangeResolution();
 
-            // Don't change the actual display mode. Especially considering our support for arbitrary resolutions, this
-            // can lead to completely locking up user's session (on Linux).
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                Graphics.HardwareModeSwitch = false;
+            // Don't change the actual display mode."
+              new_qg = "if (!OperatingSystem.IsAndroid()) { ChangeResolution(); }
 
-            // Apply all graphics changes
-            Graphics.ApplyChanges();"""
-              new_qg = """            if (!OperatingSystem.IsAndroid())
-            {
-                ChangeResolution();
-
-                // Don't change the actual display mode. Especially considering our support for arbitrary resolutions, this
-                // can lead to completely locking up user's session (on Linux).
-                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                    Graphics.HardwareModeSwitch = false;
-
-                // Apply all graphics changes
-                Graphics.ApplyChanges();
-            }"""
+            // Don't change the actual display mode."
               if t_qg.count(old_qg) == 1:
                   qg.write_text(t_qg.replace(old_qg, new_qg), encoding="utf-8")
                   print("android: QuaverGame omite ChangeResolution de escritorio en Android")
@@ -1264,32 +1240,19 @@ jobs:
               else:
                   lg.write_text(t.replace(old, 'Path.Join(global::Wobble.WobbleGame.WorkingDirectory, "Logs")'), encoding="utf-8")
                   print("android: Logger usa WobbleGame.WorkingDirectory")
-
-              # 14) ROBUSTEZ TEXTURAS: AssetLoader.LoadTexture2D devuelve textura blanca 1x1 si data es nulo en lugar de colgar el juego
+              # 14) ROBUSTEZ TEXTURAS: AssetLoader con fallback blanco 1x1 si la textura es nula
               al = W / "Assets" / "AssetLoader.cs"
               t_al = al.read_text(encoding="utf-8-sig")
-              old_al = """        public static Texture2D LoadTexture2D(byte[] data)
-        {
+              old_al = "using (var stream = new MemoryStream(data))
+                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);"
+              new_al = "if (data == null || data.Length == 0) { var fb = new Texture2D(GameBase.Game.GraphicsDevice, 1, 1); fb.SetData(new[] { Color.White }); return fb; }
             using (var stream = new MemoryStream(data))
-                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);
-        }"""
-              new_al = """        public static Texture2D LoadTexture2D(byte[] data)
-        {
-            if (data == null || data.Length == 0)
-            {
-                var fallback = new Texture2D(GameBase.Game.GraphicsDevice, 1, 1);
-                fallback.SetData(new[] { Color.White });
-                return fallback;
-            }
-
-            using (var stream = new MemoryStream(data))
-                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);
-        }"""
+                return Texture2D.FromStream(GameBase.Game.GraphicsDevice, stream);"
               if t_al.count(old_al) == 1:
                   al.write_text(t_al.replace(old_al, new_al), encoding="utf-8")
                   print("android: AssetLoader con fallback seguro para texturas nulas")
 
-              # 15) ROBUSTEZ AUDIO: AudioManager no debe colgar el juego completo con AudioEngineException si BASS falla en Android
+              # 15) ROBUSTEZ AUDIO: AudioManager tolera fallo de audio sin cerrar la app en Android
               am = W / "Audio" / "AudioManager.cs"
               t_am = am.read_text(encoding="utf-8-sig")
               old_am = 'throw new AudioEngineException("Quaver could not find an audio output device. Please connect or enable an audio output device and restart the game.");'
@@ -1297,9 +1260,9 @@ jobs:
                     throw new AudioEngineException("Quaver could not find an audio output device. Please connect or enable an audio output device and restart the game.");'
               if t_am.count(old_am) == 1:
                   am.write_text(t_am.replace(old_am, new_am), encoding="utf-8")
-                  print("android: AudioManager tolera fallo de audio sin cerrar la app")
+                  print("android: AudioManager tolera fallo de audio")
 
-              # 16) ROBUSTEZ IMPORTADOR: MapsetImporter.WatchForChanges no debe lanzar excepcion en carpetas inexistentes de Android
+              # 16) ROBUSTEZ IMPORTADOR: MapsetImporter omite FileSystemWatcher de escritorio en Android
               mi = root / "Quaver.Shared" / "Database" / "Maps" / "MapsetImporter.cs"
               t_mi = mi.read_text(encoding="utf-8-sig")
               old_mi = "internal static void WatchForChanges()\n        {"
@@ -1308,30 +1271,15 @@ jobs:
                   mi.write_text(t_mi.replace(old_mi, new_mi), encoding="utf-8")
                   print("android: MapsetImporter omite FileSystemWatcher de escritorio")
 
-              # 17) ROBUSTEZ PANTALLA: QuaverGame.Initialize no debe forzar resolucion fija de escritorio (1366x768) en Android
+              # 17) ROBUSTEZ PANTALLA: QuaverGame omite ChangeResolution fijo en Android
               qg = root / "Quaver.Shared" / "QuaverGame.cs"
               t_qg = qg.read_text(encoding="utf-8-sig")
-              old_qg = """            ChangeResolution();
+              old_qg = "ChangeResolution();
 
-            // Don't change the actual display mode. Especially considering our support for arbitrary resolutions, this
-            // can lead to completely locking up user's session (on Linux).
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                Graphics.HardwareModeSwitch = false;
+            // Don't change the actual display mode."
+              new_qg = "if (!OperatingSystem.IsAndroid()) { ChangeResolution(); }
 
-            // Apply all graphics changes
-            Graphics.ApplyChanges();"""
-              new_qg = """            if (!OperatingSystem.IsAndroid())
-            {
-                ChangeResolution();
-
-                // Don't change the actual display mode. Especially considering our support for arbitrary resolutions, this
-                // can lead to completely locking up user's session (on Linux).
-                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                    Graphics.HardwareModeSwitch = false;
-
-                // Apply all graphics changes
-                Graphics.ApplyChanges();
-            }"""
+            // Don't change the actual display mode."
               if t_qg.count(old_qg) == 1:
                   qg.write_text(t_qg.replace(old_qg, new_qg), encoding="utf-8")
                   print("android: QuaverGame omite ChangeResolution de escritorio en Android")
