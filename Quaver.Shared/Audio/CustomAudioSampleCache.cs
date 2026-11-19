@@ -18,7 +18,7 @@ namespace Quaver.Shared.Audio
         /// <summary>
         ///     MD5 hash of the map where the sound samples are from.
         /// </summary>
-        private static string MapMd5? { get; set; }
+        private static string? MapMd5 { get; set; }
 
         /// <summary>
         ///     The cached audio samples.
