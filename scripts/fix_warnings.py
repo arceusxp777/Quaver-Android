@@ -1,7 +1,7 @@
-import pathlib
+from pathlib import Path
 import sys
 
-root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
+root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
 
 # 1) CS0659 en Quaver.API (TimingGroup y ScrollGroup)
 tg = root / "Quaver.API" / "Quaver.API" / "Maps" / "Structures" / "TimingGroup.cs"
@@ -15,7 +15,10 @@ if tg.is_file():
             "        {\n"
             "            unchecked\n"
             "            {\n"
-            "                return ((ColorRgb != null ? ColorRgb.GetHashCode() : 0) * 397) ^ Hidden.GetHashCode();\n"
+            "                var hashCode = (InitialScrollVelocity != null ? InitialScrollVelocity.GetHashCode() : 0);\n"
+            "                hashCode = (hashCode * 397) ^ ColorRgb.GetHashCode();\n"
+            "                hashCode = (hashCode * 397) ^ Hidden.GetHashCode();\n"
+            "                return hashCode;\n"
             "            }\n"
             "        }",
         )
@@ -33,7 +36,6 @@ if sg.is_file():
             "            unchecked\n"
             "            {\n"
             "                var hashCode = base.GetHashCode();\n"
-            "                hashCode = (hashCode * 397) ^ InitialScrollVelocity.GetHashCode();\n"
             "                if (ScrollVelocities != null)\n"
             "                    foreach (var sv in ScrollVelocities)\n"
             "                        hashCode = (hashCode * 397) ^ SliderVelocityInfo.ByValueComparer.GetHashCode(sv);\n"
@@ -63,10 +65,11 @@ for rel in (
         txt = txt.replace("</NoWarn>", f"{extra}</NoWarn>")
         p.write_text(txt, encoding="utf-8")
 
-# 3) Evitar deadlock en hilo UI de Android al guardar config (WriteConfigFileAsync().Wait())
+# 3) ConfigManager & StructuredConfigManager: evitar deadlock en hilo UI + ruta valida de SteamWorkshopDirectory en Android
 cm = root / "Quaver.Shared" / "Config" / "ConfigManager.cs"
 if cm.is_file():
     ct = cm.read_text(encoding="utf-8-sig")
+    cm_changed = False
     if "internal static async Task WriteConfigFileAsync()" in ct:
         ct = ct.replace(
             "internal static async Task WriteConfigFileAsync()",
@@ -80,6 +83,17 @@ if cm.is_file():
             "            LastWrite = GameBase.Game?.TimeRunning ?? -1;\n        }",
             "            LastWrite = GameBase.Game?.TimeRunning ?? -1;\n            return Task.CompletedTask;\n        }",
         )
+        cm_changed = True
+    old_ws = '_steamWorkshopDirectory = $"{GameDirectory.Value}/../../workshop/content/{SteamManager.ApplicationId}";'
+    new_ws = (
+        '_steamWorkshopDirectory = global::System.OperatingSystem.IsAndroid()\n'
+        '                ? $"{GameDirectory.Value}/Workshop"\n'
+        '                : $"{GameDirectory.Value}/../../workshop/content/{SteamManager.ApplicationId}";'
+    )
+    if old_ws in ct and 'GameDirectory.Value}/Workshop' not in ct:
+        ct = ct.replace(old_ws, new_ws)
+        cm_changed = True
+    if cm_changed:
         cm.write_text(ct, encoding="utf-8")
 
 scm = root / "Quaver.Shared" / "Config" / "StructuredConfigManager.cs"
@@ -180,6 +194,39 @@ if wg.is_file():
     if changed:
         wg.write_text(wt, encoding="utf-8")
 
+# 4b) Drawable.~Drawable: proteger Destroy() en el hilo Finalizer para evitar crashes AppDomain si falla un ctor parcial
+drw = root / "Wobble" / "Wobble" / "Graphics" / "Drawable.cs"
+if drw.is_file():
+    dt = drw.read_text(encoding="utf-8-sig")
+    old_fin = (
+        "        ~Drawable()\n"
+        "        {\n"
+        "            if (IsDisposed)\n"
+        "                return;\n\n"
+        "            Destroy();\n"
+        "            IsDisposed = true;\n"
+        "        }"
+    )
+    new_fin = (
+        "        ~Drawable()\n"
+        "        {\n"
+        "            if (IsDisposed)\n"
+        "                return;\n\n"
+        "            try\n"
+        "            {\n"
+        "                Destroy();\n"
+        "            }\n"
+        "            catch (Exception ex)\n"
+        "            {\n"
+        '                try { global::Wobble.Logging.AndroidDiagnostics.Trace("Drawable.Finalize: " + ex.GetType().Name + ": " + ex.Message); } catch { }\n'
+        "            }\n\n"
+        "            IsDisposed = true;\n"
+        "        }"
+    )
+    if old_fin in dt and "Drawable.Finalize:" not in dt:
+        dt = dt.replace(old_fin, new_fin)
+        drw.write_text(dt, encoding="utf-8")
+
 # 5) QuaverGame: trazas y captura de errores en Initialize, LoadContent y FirstUpdate
 qg = root / "Quaver.Shared" / "QuaverGame.cs"
 if qg.is_file():
@@ -276,6 +323,194 @@ if qg.is_file():
     if q_changed:
         qg.write_text(qt, encoding="utf-8")
 
+# 5b) SkinStore, OptionsMenu, OptionsDialog, OptionsItems y EditScreen: evitar DirectoryNotFoundException / NullReferenceException
+sk = root / "Quaver.Shared" / "Skinning" / "SkinStore.cs"
+if sk.is_file():
+    skt = sk.read_text(encoding="utf-8-sig")
+    old_gs = (
+        "            var skinDirectories = Directory.GetDirectories(ConfigManager.SkinDirectory.Value);\n\n"
+        "            var dirs = skinDirectories.Select(dir => new DirectoryInfo(dir).Name);\n"
+        "            skins.AddRange(dirs.ToList());\n\n"
+        "            var workshopDirectories = Directory.GetDirectories(ConfigManager.SteamWorkshopDirectory.Value);"
+    )
+    new_gs = (
+        "            var skinDir = ConfigManager.SkinDirectory?.Value;\n"
+        "            var skinDirectories = !string.IsNullOrEmpty(skinDir) && Directory.Exists(skinDir)\n"
+        "                ? Directory.GetDirectories(skinDir)\n"
+        "                : global::System.Array.Empty<string>();\n\n"
+        "            var dirs = skinDirectories.Select(dir => new DirectoryInfo(dir).Name);\n"
+        "            skins.AddRange(dirs.ToList());\n\n"
+        "            var workshopDir = ConfigManager.SteamWorkshopDirectory?.Value;\n"
+        "            var workshopDirectories = !string.IsNullOrEmpty(workshopDir) && Directory.Exists(workshopDir)\n"
+        "                ? Directory.GetDirectories(workshopDir)\n"
+        "                : global::System.Array.Empty<string>();"
+    )
+    if old_gs in skt:
+        skt = skt.replace(old_gs, new_gs)
+        sk.write_text(skt, encoding="utf-8")
+
+om = root / "Quaver.Shared" / "Screens" / "Options" / "OptionsMenu.cs"
+if om.is_file():
+    omt = om.read_text(encoding="utf-8-sig")
+    old_omd = (
+        "        public override void Destroy()\n"
+        "        {\n"
+        "            // ReSharper disable once DelegateSubtraction\n"
+        "            SelectedSection.ValueChanged -= OnSectionChanged;\n"
+        "            SelectedSection?.Dispose();\n"
+        "            CurrentSearchQuery?.Dispose();\n"
+        "            IsOptionFocused?.Dispose();\n\n"
+        "            // Make sure to destroy everything that's not visible\n"
+        "            foreach (var section in Sections)\n"
+        "            {\n"
+        "                foreach (var subcategory in section.Subcategories)\n"
+        "                {\n"
+        "                    foreach (var item in subcategory.Items)\n"
+        "                    {\n"
+        "                        item?.Destroy();\n"
+        "                    }\n"
+        "                }\n"
+        "            }\n\n"
+        "            base.Destroy();\n"
+        "        }"
+    )
+    new_omd = (
+        "        public override void Destroy()\n"
+        "        {\n"
+        "            if (SelectedSection != null)\n"
+        "            {\n"
+        "                // ReSharper disable once DelegateSubtraction\n"
+        "                SelectedSection.ValueChanged -= OnSectionChanged;\n"
+        "                SelectedSection.Dispose();\n"
+        "            }\n"
+        "            CurrentSearchQuery?.Dispose();\n"
+        "            IsOptionFocused?.Dispose();\n\n"
+        "            // Make sure to destroy everything that's not visible\n"
+        "            if (Sections != null)\n"
+        "            {\n"
+        "                foreach (var section in Sections)\n"
+        "                {\n"
+        "                    if (section?.Subcategories == null)\n"
+        "                        continue;\n\n"
+        "                    foreach (var subcategory in section.Subcategories)\n"
+        "                    {\n"
+        "                        if (subcategory?.Items == null)\n"
+        "                            continue;\n\n"
+        "                        foreach (var item in subcategory.Items)\n"
+        "                        {\n"
+        "                            item?.Destroy();\n"
+        "                        }\n"
+        "                    }\n"
+        "                }\n"
+        "            }\n\n"
+        "            base.Destroy();\n"
+        "        }"
+    )
+    if old_omd in omt:
+        omt = omt.replace(old_omd, new_omd)
+        om.write_text(omt, encoding="utf-8")
+
+od = root / "Quaver.Shared" / "Screens" / "Options" / "OptionsDialog.cs"
+if od.is_file():
+    odt = od.read_text(encoding="utf-8-sig")
+    if "GlobalInputToken.Dispose();" in odt:
+        odt = odt.replace("GlobalInputToken.Dispose();", "GlobalInputToken?.Dispose();")
+        od.write_text(odt, encoding="utf-8")
+
+ocs = root / "Quaver.Shared" / "Screens" / "Options" / "Items" / "Custom" / "OptionsItemCustomSkin.cs"
+if ocs.is_file():
+    ocst = ocs.read_text(encoding="utf-8-sig")
+    old_gsi = "            if (skin == null)\n                return 0;"
+    new_gsi = "            if (skin == null || string.IsNullOrEmpty(skin.Value))\n                return 0;"
+    if old_gsi in ocst:
+        ocst = ocst.replace(old_gsi, new_gsi)
+        ocs.write_text(ocst, encoding="utf-8")
+
+osr = root / "Quaver.Shared" / "Screens" / "Options" / "Items" / "Custom" / "OptionsItemScreenResolution.cs"
+if osr.is_file():
+    osrt = osr.read_text(encoding="utf-8-sig")
+    old_modes = (
+        "            foreach (DisplayMode mode in GraphicsAdapter.DefaultAdapter.SupportedDisplayModes)\n"
+        "            {\n"
+        '                var option = $"{mode.Width}x{mode.Height}";\n\n'
+        "                if (!options.Contains(option))\n"
+        "                    options.Add(option);\n"
+        "            }"
+    )
+    new_modes = (
+        "            try\n"
+        "            {\n"
+        "                foreach (DisplayMode mode in GraphicsAdapter.DefaultAdapter.SupportedDisplayModes)\n"
+        "                {\n"
+        '                    var option = $"{mode.Width}x{mode.Height}";\n\n'
+        "                    if (!options.Contains(option))\n"
+        "                        options.Add(option);\n"
+        "                }\n"
+        "            }\n"
+        "            catch\n"
+        "            {\n"
+        "            }"
+    )
+    if old_modes in osrt and "try\n            {\n                foreach (DisplayMode mode" not in osrt:
+        osrt = osrt.replace(old_modes, new_modes)
+        osr.write_text(osrt, encoding="utf-8")
+
+oao = root / "Quaver.Shared" / "Screens" / "Options" / "Items" / "Custom" / "OptionsItemAudioOutputDevice.cs"
+if oao.is_file():
+    oaot = oao.read_text(encoding="utf-8-sig")
+    old_ao = (
+        "        private static List<string> GetOptions()\n"
+        "        {\n"
+        "            var options = new List<string>();\n\n"
+        "            for (var i = 1; i < Bass.DeviceCount; i++)\n"
+        "                options.Add(Bass.GetDeviceInfo(i).Name);\n\n"
+        "            return options;\n"
+        "        }"
+    )
+    new_ao = (
+        "        private static List<string> GetOptions()\n"
+        "        {\n"
+        "            var options = new List<string>();\n\n"
+        "            try\n"
+        "            {\n"
+        "                for (var i = 1; i < Bass.DeviceCount; i++)\n"
+        "                {\n"
+        "                    var name = Bass.GetDeviceInfo(i).Name;\n"
+        "                    if (!string.IsNullOrWhiteSpace(name))\n"
+        "                        options.Add(name);\n"
+        "                }\n"
+        "            }\n"
+        "            catch\n"
+        "            {\n"
+        "            }\n\n"
+        "            if (options.Count == 0)\n"
+        '                options.Add("Default");\n\n'
+        "            return options;\n"
+        "        }"
+    )
+    if old_ao in oaot:
+        oaot = oaot.replace(old_ao, new_ao)
+        oao.write_text(oaot, encoding="utf-8")
+
+es = root / "Quaver.Shared" / "Screens" / "Edit" / "EditScreen.cs"
+if es.is_file():
+    est = es.read_text(encoding="utf-8-sig")
+    old_lp = (
+        "        private void LoadPluginsFromDirectory(string dir, bool isWorkshop)\n"
+        "        {\n"
+        "            foreach (var directory in Directory.GetDirectories(dir))"
+    )
+    new_lp = (
+        "        private void LoadPluginsFromDirectory(string dir, bool isWorkshop)\n"
+        "        {\n"
+        "            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))\n"
+        "                return;\n\n"
+        "            foreach (var directory in Directory.GetDirectories(dir))"
+    )
+    if old_lp in est:
+        est = est.replace(old_lp, new_lp)
+        es.write_text(est, encoding="utf-8")
+
 # 6) MainActivity: HUD visible desde el primer instante + juego en capa inferior
 ma = root / "android-head" / "MainActivity.cs"
 if ma.is_file():
@@ -315,7 +550,7 @@ namespace QuaverAndroid
             _crashFile = Path.Combine(dataDir, "informe-fallo.txt");
             HookCrashHandlers();
 
-            foreach (var dir in new[] { "Songs", "Skins", "Screenshots", "Replays", "Backup", "Logs" })
+            foreach (var dir in new[] { "Songs", "Skins", "Screenshots", "Replays", "Backup", "Logs", "Workshop" })
             {
                 try { Directory.CreateDirectory(Path.Combine(dataDir, dir)); } catch { }
             }
@@ -476,10 +711,13 @@ namespace QuaverAndroid
                 sb.AppendLine("Quaver Android (comunitario) - informe de fallo");
                 sb.AppendLine("Origen: " + origin);
                 sb.AppendLine("Hora UTC: " + DateTime.UtcNow.ToString("u"));
-                sb.AppendLine("Dispositivo: " + Build.Manufacturer + " " + Build.Model + " / Android " + Build.VERSION.Release + " (API " + (int)Build.VERSION.SdkInt + ")");
+                sb.AppendLine("Dispositivo: " + Build.Manufacturer + " " + Build.Model + " / Android " + Build.VERSION.Release + " (API " + (int)Build.SdkInt + ")");
                 sb.AppendLine();
                 sb.AppendLine(body);
-                File.WriteAllText(_crashFile, sb.ToString());
+                if (File.Exists(_crashFile) && new FileInfo(_crashFile).Length < 65536)
+                    File.AppendAllText(_crashFile, "\n\n--- REGISTRO ADICIONAL ---\n\n" + sb);
+                else
+                    File.WriteAllText(_crashFile, sb.ToString());
                 Android.Util.Log.Error("QuaverAndroid", sb.ToString());
             }
             catch { }
