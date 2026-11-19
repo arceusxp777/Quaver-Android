@@ -63,13 +63,93 @@ for rel in (
         txt = txt.replace("</NoWarn>", f"{extra}</NoWarn>")
         p.write_text(txt, encoding="utf-8")
 
-# 3) Trazas y captura de errores en WobbleGame.LoadContent y QuaverGame.LoadContent
+# 3) Evitar deadlock en hilo UI de Android al guardar config (WriteConfigFileAsync().Wait())
+cm = root / "Quaver.Shared" / "Config" / "ConfigManager.cs"
+if cm.is_file():
+    ct = cm.read_text(encoding="utf-8-sig")
+    if "internal static async Task WriteConfigFileAsync()" in ct:
+        ct = ct.replace(
+            "internal static async Task WriteConfigFileAsync()",
+            "internal static Task WriteConfigFileAsync()",
+        )
+        ct = ct.replace(
+            "await sw.WriteLineAsync(sb.ToString());",
+            "sw.WriteLine(sb.ToString());",
+        )
+        ct = ct.replace(
+            "            LastWrite = GameBase.Game?.TimeRunning ?? -1;\n        }",
+            "            LastWrite = GameBase.Game?.TimeRunning ?? -1;\n            return Task.CompletedTask;\n        }",
+        )
+        cm.write_text(ct, encoding="utf-8")
+
+scm = root / "Quaver.Shared" / "Config" / "StructuredConfigManager.cs"
+if scm.is_file():
+    st = scm.read_text(encoding="utf-8-sig")
+    if "internal static async Task WriteConfigFileAsync()" in st:
+        st = st.replace(
+            "internal static async Task WriteConfigFileAsync()",
+            "internal static Task WriteConfigFileAsync()",
+        )
+        st = st.replace(
+            "await using var sw = new StreamWriter(configFilePath);",
+            "using var sw = new StreamWriter(configFilePath);",
+        )
+        st = st.replace(
+            "        LastWrite = GameBase.Game?.TimeRunning ?? -1;\n    }",
+            "        LastWrite = GameBase.Game?.TimeRunning ?? -1;\n        return Task.CompletedTask;\n    }",
+        )
+        scm.write_text(st, encoding="utf-8")
+
+# 4) WobbleGame: MainThreadId en hilo GL, evitar ImGui/cimgui en Android Debug, y trazas Initialize/LoadContent
 wg = root / "Wobble" / "Wobble" / "WobbleGame.cs"
 if wg.is_file():
     wt = wg.read_text(encoding="utf-8-sig")
+    changed = False
+    if "public int MainThreadId { get; }" in wt:
+        wt = wt.replace(
+            "public int MainThreadId { get; }",
+            "public int MainThreadId { get; private set; }",
+        )
+        changed = True
+    old_init = (
+        "        protected override void Initialize()\n"
+        "        {\n"
+        '            global::Wobble.Logging.AndroidDiagnostics.Trace("WobbleGame.Initialize profile=" + GraphicsDevice?.GraphicsProfile);\n'
+        '            Resources.AddStore(new DllResourceStore("Wobble.Resources.dll"));\n\n'
+        "            LogManager.Initialize();\n"
+        "            AudioManager.Initialize(DevicePeriod, DeviceBufferLength);\n"
+        "            Window.ClientSizeChanged += WindowManager.OnClientSizeChanged;\n\n"
+        "            base.Initialize();\n"
+        "        }"
+    )
+    new_init = (
+        "        protected override void Initialize()\n"
+        "        {\n"
+        "            MainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;\n"
+        '            global::Wobble.Logging.AndroidDiagnostics.Trace("WobbleGame.Initialize start tid=" + MainThreadId + " profile=" + GraphicsDevice?.GraphicsProfile);\n'
+        "            try\n"
+        "            {\n"
+        '                Resources.AddStore(new DllResourceStore("Wobble.Resources.dll"));\n\n'
+        "                LogManager.Initialize();\n"
+        "                AudioManager.Initialize(DevicePeriod, DeviceBufferLength);\n"
+        "                Window.ClientSizeChanged += WindowManager.OnClientSizeChanged;\n\n"
+        "                base.Initialize();\n"
+        '                global::Wobble.Logging.AndroidDiagnostics.Trace("WobbleGame.Initialize ok");\n'
+        "            }\n"
+        "            catch (Exception ex)\n"
+        "            {\n"
+        '                global::Wobble.Logging.AndroidDiagnostics.Fatal("WobbleGame.Initialize", ex);\n'
+        "                throw;\n"
+        "            }\n"
+        "        }"
+    )
+    if old_init in wt:
+        wt = wt.replace(old_init, new_init)
+        changed = True
     old_wl = "            SpriteBatch = new SpriteBatch(GraphicsDevice);\n            WobbleAssets.Load();"
     new_wl = (
-        '            global::Wobble.Logging.AndroidDiagnostics.Trace("WobbleGame.LoadContent start gd=" + (GraphicsDevice != null));\n'
+        "            MainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;\n"
+        '            global::Wobble.Logging.AndroidDiagnostics.Trace("WobbleGame.LoadContent start tid=" + MainThreadId + " gd=" + (GraphicsDevice != null));\n'
         "            try\n"
         "            {\n"
         "                SpriteBatch = new SpriteBatch(GraphicsDevice);\n"
@@ -83,11 +163,53 @@ if wg.is_file():
         "            }"
     )
     if old_wl in wt and "WobbleGame.LoadContent start" not in wt:
-        wg.write_text(wt.replace(old_wl, new_wl), encoding="utf-8")
+        wt = wt.replace(old_wl, new_wl)
+        changed = True
+    elif 'global::Wobble.Logging.AndroidDiagnostics.Trace("WobbleGame.LoadContent start gd=" + (GraphicsDevice != null));' in wt:
+        wt = wt.replace(
+            'global::Wobble.Logging.AndroidDiagnostics.Trace("WobbleGame.LoadContent start gd=" + (GraphicsDevice != null));',
+            'MainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;\n            global::Wobble.Logging.AndroidDiagnostics.Trace("WobbleGame.LoadContent start tid=" + MainThreadId + " gd=" + (GraphicsDevice != null));',
+        )
+        changed = True
+    if "#if DEBUG\n            DebugOverlay = new DebugOverlay();\n#endif" in wt:
+        wt = wt.replace(
+            "#if DEBUG\n            DebugOverlay = new DebugOverlay();\n#endif",
+            "#if DEBUG\n            if (!global::System.OperatingSystem.IsAndroid())\n                DebugOverlay = new DebugOverlay();\n#endif",
+        )
+        changed = True
+    if changed:
+        wg.write_text(wt, encoding="utf-8")
 
+# 5) QuaverGame: trazas y captura de errores en Initialize, LoadContent y FirstUpdate
 qg = root / "Quaver.Shared" / "QuaverGame.cs"
 if qg.is_file():
     qt = qg.read_text(encoding="utf-8-sig")
+    q_changed = False
+    old_qi = "        protected override void Initialize()\n        {\n            QuaverScreenManager.Initialize();"
+    new_qi = (
+        "        protected override void Initialize()\n"
+        "        {\n"
+        '            global::Wobble.Logging.AndroidDiagnostics.Trace("QuaverGame.Initialize start");\n'
+        "            try\n"
+        "            {\n"
+        "                QuaverScreenManager.Initialize();"
+    )
+    old_qi_end = "            base.Initialize();\n        }\n\n        /// <inheritdoc />\n        /// <summary>\n        ///     LoadContent"
+    new_qi_end = (
+        "                base.Initialize();\n"
+        '                global::Wobble.Logging.AndroidDiagnostics.Trace("QuaverGame.Initialize ok");\n'
+        "            }\n"
+        "            catch (Exception ex)\n"
+        "            {\n"
+        '                global::Wobble.Logging.AndroidDiagnostics.Fatal("QuaverGame.Initialize", ex);\n'
+        "                throw;\n"
+        "            }\n"
+        "        }\n\n        /// <inheritdoc />\n        /// <summary>\n        ///     LoadContent"
+    )
+    if old_qi in qt and old_qi_end in qt and "QuaverGame.Initialize start" not in qt:
+        qt = qt.replace(old_qi, new_qi).replace(old_qi_end, new_qi_end)
+        q_changed = True
+
     old_ql = "            base.LoadContent();\n            GlobalIcons.Load();"
     new_ql = (
         '            global::Wobble.Logging.AndroidDiagnostics.Trace("QuaverGame.LoadContent begin");\n'
@@ -111,9 +233,50 @@ if qg.is_file():
     )
     if old_ql in qt and old_ql_end in qt and "QuaverGame.LoadContent begin" not in qt:
         qt = qt.replace(old_ql, new_ql).replace(old_ql_end, new_ql_end)
+        q_changed = True
+
+    old_fu = (
+        "            if (!FirstUpdateCalled)\n"
+        "            {\n"
+        "                InitializeFpsLimiting();\n\n"
+        "                // Create the online hub on the first update, since it uses text, and we have to wait for things to\n"
+        "                // be initialized\n"
+        "                OnlineHub = new OnlineHub();\n"
+        "                OnlineChat = new OnlineChat();\n"
+        "                TooltipManager.TargetEligibilityFilter = target => OnlineChat.AllowsTooltip(target);\n"
+        "                VolumeController = new VolumeControl();\n"
+        "                FirstUpdateCalled = true;\n"
+        "            }"
+    )
+    new_fu = (
+        "            if (!FirstUpdateCalled)\n"
+        "            {\n"
+        '                global::Wobble.Logging.AndroidDiagnostics.Trace("QuaverGame.FirstUpdate start");\n'
+        "                try\n"
+        "                {\n"
+        "                    InitializeFpsLimiting();\n"
+        "                    OnlineHub = new OnlineHub();\n"
+        "                    OnlineChat = new OnlineChat();\n"
+        "                    TooltipManager.TargetEligibilityFilter = target => OnlineChat.AllowsTooltip(target);\n"
+        "                    VolumeController = new VolumeControl();\n"
+        "                    FirstUpdateCalled = true;\n"
+        '                    global::Wobble.Logging.AndroidDiagnostics.Trace("QuaverGame.FirstUpdate ok");\n'
+        "                }\n"
+        "                catch (Exception ex)\n"
+        "                {\n"
+        '                    global::Wobble.Logging.AndroidDiagnostics.Fatal("QuaverGame.FirstUpdate", ex);\n'
+        "                    throw;\n"
+        "                }\n"
+        "            }"
+    )
+    if old_fu in qt and "QuaverGame.FirstUpdate start" not in qt:
+        qt = qt.replace(old_fu, new_fu)
+        q_changed = True
+
+    if q_changed:
         qg.write_text(qt, encoding="utf-8")
 
-# 4) MainActivity: boton LOGS visible sobre el juego, estado en vivo y ShowReport legible
+# 6) MainActivity: HUD visible desde el primer instante + juego en capa inferior
 ma = root / "android-head" / "MainActivity.cs"
 if ma.is_file():
     ma.write_text(r"""using System;
@@ -139,6 +302,7 @@ namespace QuaverAndroid
         private string _crashFile;
         private Quaver.Shared.QuaverGame _game;
         private View _gameView;
+        private FrameLayout _rootFrame;
         private TextView _statusText;
         private Handler _handler;
 
@@ -150,6 +314,43 @@ namespace QuaverAndroid
             Wobble.WobbleGame.WorkingDirectory = dataDir + "/";
             _crashFile = Path.Combine(dataDir, "informe-fallo.txt");
             HookCrashHandlers();
+
+            foreach (var dir in new[] { "Songs", "Skins", "Screenshots", "Replays", "Backup", "Logs" })
+            {
+                try { Directory.CreateDirectory(Path.Combine(dataDir, dir)); } catch { }
+            }
+
+            if (File.Exists(_crashFile))
+            {
+                ShowReport(File.ReadAllText(_crashFile));
+                return;
+            }
+
+            _rootFrame = new FrameLayout(this);
+            _rootFrame.SetBackgroundColor(global::Android.Graphics.Color.Black);
+
+            _statusText = new TextView(this) { Text = "Iniciando Quaver..." };
+            _statusText.SetTextColor(global::Android.Graphics.Color.Yellow);
+            _statusText.SetBackgroundColor(global::Android.Graphics.Color.Argb(160, 0, 0, 0));
+            _statusText.SetPadding(16, 8, 16, 8);
+            _statusText.TextSize = 12;
+            _rootFrame.AddView(_statusText, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent,
+                GravityFlags.Top | GravityFlags.Left));
+
+            var logsBtn = new Button(this) { Text = "LOGS" };
+            logsBtn.SetBackgroundColor(global::Android.Graphics.Color.Argb(210, 180, 30, 30));
+            logsBtn.SetTextColor(global::Android.Graphics.Color.White);
+            logsBtn.Click += (s, e) => ShowReport(BuildLogText());
+            _rootFrame.AddView(logsBtn, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent,
+                GravityFlags.Top | GravityFlags.Right));
+
+            SetContentView(_rootFrame);
+
+            _handler = new Handler(Looper.MainLooper);
+            ScheduleTracePoll();
+
             AndroidDiagnostics.Trace("01.OnCreate dataDir=" + dataDir);
 
             foreach (var lib in new[] { "bass", "bass_fx", "e_sqlite3", "SkiaSharp", "freetype", "openal32" })
@@ -176,17 +377,6 @@ namespace QuaverAndroid
                 {
                     AndroidDiagnostics.Trace("Assembly.Load WARN " + asm + ": " + ex.Message);
                 }
-            }
-
-            foreach (var dir in new[] { "Songs", "Skins", "Screenshots", "Replays", "Backup", "Logs" })
-            {
-                try { Directory.CreateDirectory(Path.Combine(dataDir, dir)); } catch { }
-            }
-
-            if (File.Exists(_crashFile))
-            {
-                ShowReport(File.ReadAllText(_crashFile));
-                return;
             }
 
             try
@@ -216,34 +406,13 @@ namespace QuaverAndroid
             AndroidDiagnostics.Trace("04.new QuaverGame");
             _game = new Quaver.Shared.QuaverGame();
             _gameView = (View)_game.Services.GetService(typeof(View));
-            AndroidDiagnostics.Trace("05.SetContentView view=" + (_gameView != null));
+            AndroidDiagnostics.Trace("05.AttachGameView view=" + (_gameView != null));
 
-            var rootFrame = new FrameLayout(this);
-            rootFrame.SetBackgroundColor(global::Android.Graphics.Color.Black);
-            if (_gameView != null)
-                rootFrame.AddView(_gameView);
-
-            _statusText = new TextView(this) { Text = "Iniciando Quaver..." };
-            _statusText.SetTextColor(global::Android.Graphics.Color.Yellow);
-            _statusText.SetBackgroundColor(global::Android.Graphics.Color.Argb(160, 0, 0, 0));
-            _statusText.SetPadding(16, 8, 16, 8);
-            _statusText.TextSize = 12;
-            rootFrame.AddView(_statusText, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent,
-                GravityFlags.Top | GravityFlags.Left));
-
-            var logsBtn = new Button(this) { Text = "LOGS" };
-            logsBtn.SetBackgroundColor(global::Android.Graphics.Color.Argb(210, 180, 30, 30));
-            logsBtn.SetTextColor(global::Android.Graphics.Color.White);
-            logsBtn.Click += (s, e) => ShowReport(BuildLogText());
-            rootFrame.AddView(logsBtn, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent,
-                GravityFlags.Top | GravityFlags.Right));
-
-            SetContentView(rootFrame);
-
-            _handler = new Handler(Looper.MainLooper);
-            ScheduleTracePoll();
+            if (_gameView != null && _rootFrame != null)
+            {
+                _rootFrame.AddView(_gameView, 0, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
+            }
 
             AndroidDiagnostics.Trace("06.game.Run()");
             _game.Run();
