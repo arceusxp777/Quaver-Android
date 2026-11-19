@@ -1298,25 +1298,41 @@ jobs:
               )
 
               # R5) Trazas de Shader, QuaverGame.LoadContent y cambio de pantalla
+              # R4b) CS0659 en Quaver.API (TimingGroup y ScrollGroup)
               rw(
-                  W / "Graphics" / "Shaders" / "Shader.cs",
+                  root / "Quaver.API" / "Quaver.API" / "Maps" / "Structures" / "TimingGroup.cs",
                   lambda t: t.replace(
-                      "            ShaderEffect = new Effect(GameBase.Game.GraphicsDevice, data);",
-                      "            try\n            {\n                ShaderEffect = new Effect(GameBase.Game.GraphicsDevice, data);\n            }\n            catch (Exception ex)\n            {\n                global::Wobble.Logging.AndroidDiagnostics.Fatal(\"Shader\", ex);\n                throw;\n            }",
+                      "            return Equals((TimingGroup)obj);\n        }",
+                      "            return Equals((TimingGroup)obj);\n        }\n\n"
+                      "        public override int GetHashCode()\n"
+                      "        {\n"
+                      "            unchecked\n"
+                      "            {\n"
+                      "                return ((ColorRgb != null ? ColorRgb.GetHashCode() : 0) * 397) ^ Hidden.GetHashCode();\n"
+                      "            }\n"
+                      "        }",
                   ),
               )
               rw(
-                  root / "Quaver.Shared" / "QuaverGame.cs",
+                  root / "Quaver.API" / "Quaver.API" / "Maps" / "Structures" / "ScrollGroup.cs",
                   lambda t: t.replace(
-                      'Logger.Important($"Currently running Quaver version: `{Version}`", LogType.Runtime);',
-                      'global::Wobble.Logging.AndroidDiagnostics.Trace("QuaverGame.LoadContent gd=" + (GraphicsDevice != null) + " adapter=" + GraphicsDevice?.Adapter?.Description);\n            Logger.Important($"Currently running Quaver version: `{Version}`", LogType.Runtime);',
-                  ),
-              )
-              rw(
-                  root / "Quaver.Shared" / "Screens" / "QuaverScreenManager.cs",
-                  lambda t: t.replace(
-                      "ScreenManager.ChangeScreen(screen, retainedElements, switchImmediately);",
-                      'global::Wobble.Logging.AndroidDiagnostics.Trace("ChangeScreen -> " + screen.Type);\n                ScreenManager.ChangeScreen(screen, retainedElements, switchImmediately);',
+                      "            return Equals((ScrollGroup)obj);\n        }",
+                      "            return Equals((ScrollGroup)obj);\n        }\n\n"
+                      "        public override int GetHashCode()\n"
+                      "        {\n"
+                      "            unchecked\n"
+                      "            {\n"
+                      "                var hashCode = base.GetHashCode();\n"
+                      "                hashCode = (hashCode * 397) ^ InitialScrollVelocity.GetHashCode();\n"
+                      "                if (ScrollVelocities != null)\n"
+                      "                    foreach (var sv in ScrollVelocities)\n"
+                      "                        hashCode = (hashCode * 397) ^ SliderVelocityInfo.ByValueComparer.GetHashCode(sv);\n"
+                      "                if (ScrollSpeedFactors != null)\n"
+                      "                    foreach (var ssf in ScrollSpeedFactors)\n"
+                      "                        hashCode = (hashCode * 397) ^ ScrollSpeedFactorInfo.ByValueComparer.GetHashCode(ssf);\n"
+                      "                return hashCode;\n"
+                      "            }\n"
+                      "        }",
                   ),
               )
 
