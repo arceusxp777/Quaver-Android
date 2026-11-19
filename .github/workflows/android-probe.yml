@@ -197,7 +197,7 @@ jobs:
                       n = n.replace(
                           "</Project>",
                           '  <PropertyGroup>\n'
-                          '    <NoWarn>$(NoWarn);NU1902;NU1903;NU1701</NoWarn>\n'
+                          '    <NoWarn>$(NoWarn);NU1902;NU1903;NU1701;CS1570;CS1572;CS1574</NoWarn>
                           '  </PropertyGroup>\n'
                           '</Project>',
                       )
