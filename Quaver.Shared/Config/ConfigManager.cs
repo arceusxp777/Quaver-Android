@@ -1364,7 +1364,7 @@ namespace Quaver.Shared.Config
             {
                 binded.Value = (T)converter.ConvertFromString(null, CultureInfo.InvariantCulture, ini[name]);
             }
-            catch (Exception e)
+            catch (Exception)
             {
                 binded.Value = defaultVal;
             }
@@ -1427,7 +1427,7 @@ namespace Quaver.Shared.Config
                         break;
                 }
             }
-            catch (Exception e)
+            catch (Exception)
             {
                 binded.Value = defaultVal;
             }
@@ -1515,7 +1515,7 @@ namespace Quaver.Shared.Config
                 {
                     sb.AppendLine(prop.Name + " = " + prop.GetValue(null));
                 }
-                catch (Exception e)
+                catch (Exception)
                 {
                     sb.AppendLine(prop.Name + " = ");
                 }
@@ -1537,7 +1537,7 @@ namespace Quaver.Shared.Config
 
                 FirstWrite = false;
             }
-            catch (Exception e)
+            catch (Exception)
             {
                 // Try to write the file again 3 times.
                 while (attempts != 2)
