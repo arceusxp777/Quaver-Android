@@ -15,10 +15,7 @@ if tg.is_file():
             "        {\n"
             "            unchecked\n"
             "            {\n"
-            "                var hashCode = (InitialScrollVelocity != null ? InitialScrollVelocity.GetHashCode() : 0);\n"
-            "                hashCode = (hashCode * 397) ^ ColorRgb.GetHashCode();\n"
-            "                hashCode = (hashCode * 397) ^ Hidden.GetHashCode();\n"
-            "                return hashCode;\n"
+            "                return ((ColorRgb != null ? ColorRgb.GetHashCode() : 0) * 397) ^ Hidden.GetHashCode();\n"
             "            }\n"
             "        }",
         )
@@ -36,6 +33,7 @@ if sg.is_file():
             "            unchecked\n"
             "            {\n"
             "                var hashCode = base.GetHashCode();\n"
+            "                hashCode = (hashCode * 397) ^ InitialScrollVelocity.GetHashCode();\n"
             "                if (ScrollVelocities != null)\n"
             "                    foreach (var sv in ScrollVelocities)\n"
             "                        hashCode = (hashCode * 397) ^ SliderVelocityInfo.ByValueComparer.GetHashCode(sv);\n"
@@ -48,8 +46,8 @@ if sg.is_file():
         )
         sg.write_text(t, encoding="utf-8")
 
-# 2) Silenciar XML docs de submodulos (CS1570, CS1572, CS1574)
-extra = ";CS1570;CS1572;CS1574"
+# 2) Silenciar warnings de submódulos (CS0108, CS0168, CS0169, CS0659, CS1570, CS1572, CS1574)
+extra = ";CS0108;CS0168;CS0169;CS0659;CS1570;CS1572;CS1574"
 for rel in (
     "Quaver.API/Quaver.API/Quaver.API.csproj",
     "Wobble/Wobble/Wobble.csproj",
