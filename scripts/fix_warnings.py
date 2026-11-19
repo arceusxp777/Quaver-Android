@@ -47,7 +47,7 @@ if sg.is_file():
         sg.write_text(t, encoding="utf-8")
 
 # 2) Silenciar warnings de submódulos (CS0108, CS0168, CS0169, CS0659, CS1570, CS1572, CS1574)
-extra = ";CS0108;CS0168;CS0169;CS0659;CS1570;CS1572;CS1574"
+extra = ";CS0105;CS0108;CS0114;CS0168;CS0169;CS0659;CS1570;CS1572;CS1574;CS8625"
 for rel in (
     "Quaver.API/Quaver.API/Quaver.API.csproj",
     "Wobble/Wobble/Wobble.csproj",
@@ -709,7 +709,7 @@ namespace QuaverAndroid
                 sb.AppendLine("Quaver Android (comunitario) - informe de fallo");
                 sb.AppendLine("Origen: " + origin);
                 sb.AppendLine("Hora UTC: " + DateTime.UtcNow.ToString("u"));
-                sb.AppendLine("Dispositivo: " + Build.Manufacturer + " " + Build.Model + " / Android " + Build.VERSION.Release + " (API " + (int)Build.SdkInt + ")");
+                sb.AppendLine("Dispositivo: " + Build.Manufacturer + " " + Build.Model + " / Android " + Build.VERSION.Release + " (API " + (int)Build.VERSION.SdkInt + ")");
                 sb.AppendLine();
                 sb.AppendLine(body);
                 if (File.Exists(_crashFile) && new FileInfo(_crashFile).Length < 65536)
