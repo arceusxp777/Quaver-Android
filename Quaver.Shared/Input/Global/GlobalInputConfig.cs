@@ -266,7 +266,7 @@ namespace Quaver.Shared.Input.Global
 
             return keybinds ?? new KeybindList(s_defaultKeybinds[action].Select(k => k.Clone()));
         }
-#pragma warning enable format // @formatter:on
+#pragma warning restore format // @formatter:on
 
         private static KeybindList Keybinds(Keys key) =>
             new(new Keybind(key));
