@@ -4520,7 +4520,7 @@ jobs:
             if unzip -l head-out/Quaver-android-dev.apk | grep -q "lib/arm64-v8a/libsteam_api.so"; then
               echo "::warning::libsteam_api.so de escritorio quedo incluido en lib/arm64-v8a/" | tee -a head-build.log
             fi
-            for wcode in XA4301 CA1416 NU1903 MSB3568 CS0642 CS0162; do
+            for wcode in XA4301 CA1416 NU1903 MSB3568 CS0642 CS0162 CS0659 CS0108 CS0114 CS8625 CS8765 CS1634; do
               WCNT=$(grep -c "$wcode" head-build.log || true)
               echo "RESUMEN $wcode: $WCNT" | tee -a head-build.log
             done
