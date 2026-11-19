@@ -197,7 +197,7 @@ jobs:
                       n = n.replace(
                           "</Project>",
                           '  <PropertyGroup>\n'
-                          '    <NoWarn>$(NoWarn);NU1902;NU1903;NU1701;CS1570;CS1572;CS1574</NoWarn>
+                          '    <NoWarn>$(NoWarn);NU1902;NU1903;NU1701;CS1570;CS1572;CS1574</NoWarn>\n'
                           '  </PropertyGroup>\n'
                           '</Project>',
                       )
@@ -4517,6 +4517,7 @@ jobs:
         run: |
           mkdir -p head-out
           echo "Compilando QuaverAndroid.csproj (arm64)..."
+          python3 scripts/fix_warnings.py .
           dotnet build android-head/QuaverAndroid.csproj -c Debug 2>&1 | tee head-build.log
           STATUS=${PIPESTATUS[0]}
           echo "BUILD_EXIT_CODE=$STATUS" | tee -a head-build.log
