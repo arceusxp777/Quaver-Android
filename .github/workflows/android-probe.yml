@@ -38,7 +38,7 @@ jobs:
           set +e
           dotnet test Quaver.API/Quaver.API.Tests 2>&1 | tee test-api.log
           echo "TEST_EXIT_CODE=${PIPESTATUS[0]}" | tee -a test-api.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: probe-logs
@@ -1346,7 +1346,7 @@ jobs:
           cd Quaver
           dotnet build 2>&1 | tee ../build-upstream-patched.log
           echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" | tee -a ../build-upstream-patched.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: probe-upstream-patched-logs
@@ -2651,7 +2651,7 @@ jobs:
           set +e
           dotnet build Quaver.Shared/Quaver.Shared.csproj -f net8.0-android 2>&1 | tee build-android-shared.log
           echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" | tee -a build-android-shared.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: probe-android-logs
@@ -2880,7 +2880,7 @@ jobs:
           echo "APK elegido: $APK" | tee -a smoke-b.log
           [ -n "$APK" ] && cp "$APK" smoke-out/B-con-api.apk
           ls -la smoke-out | tee -a smoke-b.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: probe-smoke
@@ -4548,7 +4548,7 @@ jobs:
             tail -n 120 head-build.log
             exit 1
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: probe-head
