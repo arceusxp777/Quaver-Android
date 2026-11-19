@@ -196,8 +196,7 @@ namespace Quaver.Shared.Input
             return String.Join('+', keys);
         }
 
-        protected bool Equals(Keybind? other) => other is not null && ToString() == other.ToString(); => ToString() == other.ToString();
-
+        protected bool Equals(Keybind? other) => other is not null && ToString() == other.ToString();
         public override bool Equals(object? obj)
         {
             if (ReferenceEquals(null, obj)) return false;
