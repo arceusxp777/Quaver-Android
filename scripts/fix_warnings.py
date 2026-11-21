@@ -538,6 +538,7 @@ namespace QuaverAndroid
         private FrameLayout _rootFrame;
         private TextView _statusText;
         private Handler _handler;
+        private volatile bool _reportShown; 
 
         protected override void OnCreate(Bundle bundle)
         {
@@ -653,14 +654,18 @@ namespace QuaverAndroid
 
         private void ScheduleTracePoll()
         {
+            if (_reportShown)
+                return;
             _handler?.PostDelayed(() =>
             {
+                if (_reportShown)
+                    return;
                 try
                 {
                     var tracePath = Path.Combine(FilesDir.AbsolutePath, "Logs", "boot-trace.log");
                     if (File.Exists(tracePath) && _statusText != null)
                     {
-                        var lines = ReadShared(tracePath).TrimEnd().Split('\n');
+                        var lines = ReadTailShared(tracePath, 1024).TrimEnd().Split('\n');
                         if (lines.Length > 0)
                             _statusText.Text = lines[lines.Length - 1].Trim();
                     }
@@ -668,23 +673,20 @@ namespace QuaverAndroid
                 catch { }
                 ScheduleTracePoll();
             }, 600);
-        }
-
-        public override bool DispatchKeyEvent(KeyEvent e)
-        {
-            if (e != null && e.KeyCode == Keycode.VolumeDown && e.Action == KeyEventActions.Down)
-            {
-                try { ShowReport(BuildLogText()); }
-                catch (Exception ex) { Android.Util.Log.Error("QuaverAndroid", ex.ToString()); }
-                return true;
-            }
-            return base.DispatchKeyEvent(e);
-        }
-
+        } 
         private void HookCrashHandlers()
         {
-            AppDomain.CurrentDomain.UnhandledException += (s, e) => WriteReport(e.ExceptionObject as Exception, "AppDomain");
-            Android.Runtime.AndroidEnvironment.UnhandledExceptionRaiser += (s, e) => WriteReport(e.Exception, "Android");
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            {
+                var ex = e.ExceptionObject as Exception;
+                WriteReport(ex, "AppDomain");
+                TryShowFatalUi(ex != null ? ex.ToString() : "(sin excepcion)");
+            };
+            Android.Runtime.AndroidEnvironment.UnhandledExceptionRaiser += (s, e) =>
+            {
+                WriteReport(e.Exception, "Android");
+                TryShowFatalUi(e.Exception != null ? e.Exception.ToString() : "(sin excepcion)");
+            };
             TaskScheduler.UnobservedTaskException += (s, e) =>
             {
                 WriteReport(e.Exception, "UnobservedTask");
@@ -693,14 +695,25 @@ namespace QuaverAndroid
             AndroidDiagnostics.OnFatal += msg =>
             {
                 WriteTextReport("TaskHandler/Fatal", msg);
-                try
-                {
-                    RunOnUiThread(() => ShowReport(BuildLogText() + "\n\n=== EXCEPCION ===\n" + msg));
-                }
-                catch { }
+                TryShowFatalUi(msg);
             };
         }
 
+        private void TryShowFatalUi(string msg)
+        {
+            if (_reportShown)
+                return;
+            try
+            {
+                RunOnUiThread(() =>
+                {
+                    if (_reportShown)
+                        return;
+                    ShowReport(BuildLogText() + "\n\n=== EXCEPCION ===\n" + msg);
+                });
+            }
+            catch { }
+        } 
         private void WriteTextReport(string origin, string body)
         {
             try
@@ -730,7 +743,21 @@ namespace QuaverAndroid
             using (var sr = new StreamReader(fs))
                 return sr.ReadToEnd();
         }
-
+        private static string ReadTailShared(string path, int maxBytes)
+        {
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                if (fs.Length > maxBytes)
+                    fs.Seek(-maxBytes, SeekOrigin.End);
+                using (var sr = new StreamReader(fs))
+                    return sr.ReadToEnd();
+            }
+        } 
+        private void ShowReport(string text)
+        {
+            _reportShown = true;
+            if (_gameView != null)
+                _gameView.Visibility = ViewStates.Gone; 
         private string BuildLogText()
         {
             var sb = new StringBuilder();
@@ -1303,3 +1330,302 @@ for rel, res_name in (
     if old_call in spt and f'}}, "{res_name}")' not in spt:
         spt = spt.replace(old_call, new_call)
         sp.write_text(spt, encoding="utf-8") 
+        # 9) MGFX v10 tail signature: MonoGame 3.8.1 Effect.ReadEffect espera "MGFX" (0x5846474D) al final
+for mg in sorted(root.rglob("*.mgfxo")):
+    data = mg.read_bytes()
+    if len(data) >= 10 and data[:4] == b"MGFX" and data[4] >= 10 and not data.endswith(b"MGFX"):
+        mg.write_bytes(data + b"MGFX")
+
+# 10) SQLite WAL + transacciones en lotes para evitar 30-70s de fsyncs individuales al importar/recalcular mapas
+db_mgr = root / "Quaver.Shared" / "Database" / "DatabaseManager.cs"
+if db_mgr.is_file():
+    dbt = db_mgr.read_text(encoding="utf-8-sig")
+    old_db = "public static void Initialize() => Connection = new SQLiteConnection(DatabasePath);"
+    new_db = (
+        "public static void Initialize()\n"
+        "        {\n"
+        "            Connection = new SQLiteConnection(DatabasePath);\n"
+        "            try\n"
+        "            {\n"
+        "                Connection.BusyTimeout = global::System.TimeSpan.FromSeconds(5);\n"
+        '                Connection.ExecuteScalar<string>("PRAGMA journal_mode=WAL;");\n'
+        '                Connection.Execute("PRAGMA synchronous=NORMAL;");\n'
+        '                Connection.Execute("PRAGMA temp_store=MEMORY;");\n'
+        '                Connection.Execute("PRAGMA cache_size=-8000;");\n'
+        "            }\n"
+        "            catch\n"
+        "            {\n"
+        "            }\n"
+        "        }"
+    )
+    if old_db in dbt and "journal_mode=WAL" not in dbt:
+        dbt = dbt.replace(old_db, new_db)
+        db_mgr.write_text(dbt, encoding="utf-8")
+
+map_cache = root / "Quaver.Shared" / "Database" / "Maps" / "MapDatabaseCache.cs"
+if map_cache.is_file():
+    mct = map_cache.read_text(encoding="utf-8-sig")
+    old_anc = (
+        '            ImportProgressEventArgs.Report(progress, "Importing New Maps", $"Checking {files.Count} files for uncached maps", 0, files.Count, false);\n\n'
+        "            for (var i = 0; i < files.Count; i++)\n"
+        "            {\n"
+        "                var file = files[i];\n\n"
+        "                if (hashset.Contains(BackslashToForward(file)))\n"
+        "                {\n"
+        '                    ImportProgressEventArgs.Report(progress, "Importing New Maps", $"Skipping {Path.GetFileName(file)}", i + 1, files.Count);\n\n'
+        "                    continue;\n"
+        "                }\n\n"
+        "                // Found map that isn't cached in the database yet.\n"
+        "                try\n"
+        "                {\n"
+        "                    var map = Map.FromQua(Qua.Parse(file, false), file);\n"
+        "                    InsertMap(map);\n\n"
+        "                    if (!QuaverSettingsDatabaseCache.OutdatedMaps.Contains(map))\n"
+        "                        QuaverSettingsDatabaseCache.OutdatedMaps.Add(map);\n"
+        "                }\n"
+        "                catch (Exception e)\n"
+        "                {\n"
+        "                    Logger.Error(e, LogType.Runtime);\n"
+        "                }\n\n"
+        '                ImportProgressEventArgs.Report(progress, "Importing New Maps", $"Importing {Path.GetFileName(file)}", i + 1, files.Count);\n'
+        "            }"
+    )
+    new_anc = (
+        '            ImportProgressEventArgs.Report(progress, "Importing New Maps", $"Checking {files.Count} files for uncached maps", 0, files.Count, false);\n\n'
+        "            DatabaseManager.Connection.RunInTransaction(() =>\n"
+        "            {\n"
+        "                for (var i = 0; i < files.Count; i++)\n"
+        "                {\n"
+        "                    var file = files[i];\n\n"
+        "                    if (hashset.Contains(BackslashToForward(file)))\n"
+        "                    {\n"
+        '                        ImportProgressEventArgs.Report(progress, "Importing New Maps", $"Skipping {Path.GetFileName(file)}", i + 1, files.Count);\n\n'
+        "                        continue;\n"
+        "                    }\n\n"
+        "                    // Found map that isn't cached in the database yet.\n"
+        "                    try\n"
+        "                    {\n"
+        "                        var map = Map.FromQua(Qua.Parse(file, false), file);\n"
+        "                        InsertMap(map);\n\n"
+        "                        if (!QuaverSettingsDatabaseCache.OutdatedMaps.Contains(map))\n"
+        "                            QuaverSettingsDatabaseCache.OutdatedMaps.Add(map);\n"
+        "                    }\n"
+        "                    catch (Exception e)\n"
+        "                    {\n"
+        "                        Logger.Error(e, LogType.Runtime);\n"
+        "                    }\n\n"
+        '                    ImportProgressEventArgs.Report(progress, "Importing New Maps", $"Importing {Path.GetFileName(file)}", i + 1, files.Count);\n'
+        "                }\n"
+        "            });"
+    )
+    if old_anc in mct and "RunInTransaction" not in mct:
+        mct = mct.replace(old_anc, new_anc)
+        map_cache.write_text(mct, encoding="utf-8")
+
+qs_cache = root / "Quaver.Shared" / "Database" / "Settings" / "QuaverSettingsDatabaseCache.cs"
+if qs_cache.is_file():
+    qct = qs_cache.read_text(encoding="utf-8-sig")
+    old_recalc = (
+        "            for (var i = 0; i < total; i++)\n"
+        "            {\n"
+        "                var map = OutdatedMaps[i];\n"
+        "                map.DifficultyProcessorVersion = DifficultyProcessorKeys.Version;\n\n"
+        "                try\n"
+        "                {\n"
+        "                    map.CalculateDifficulties();\n"
+        "                    MapDatabaseCache.UpdateMap(map);\n"
+        "                }\n"
+        "                catch (Exception e)\n"
+        "                {\n"
+        "                    DatabaseManager.Connection.Delete(map);\n"
+        "                }\n\n"
+        '                ImportProgressEventArgs.Report(progress, "Calculating Difficulties", $"Calculated {map.Artist} - {map.Title}", i + 1, total);\n'
+        "            }"
+    )
+    new_recalc = (
+        "            DatabaseManager.Connection.RunInTransaction(() =>\n"
+        "            {\n"
+        "                for (var i = 0; i < total; i++)\n"
+        "                {\n"
+        "                    var map = OutdatedMaps[i];\n"
+        "                    map.DifficultyProcessorVersion = DifficultyProcessorKeys.Version;\n\n"
+        "                    try\n"
+        "                    {\n"
+        "                        map.CalculateDifficulties();\n"
+        "                        MapDatabaseCache.UpdateMap(map);\n"
+        "                    }\n"
+        "                    catch (Exception e)\n"
+        "                    {\n"
+        "                        DatabaseManager.Connection.Delete(map);\n"
+        "                    }\n\n"
+        '                    ImportProgressEventArgs.Report(progress, "Calculating Difficulties", $"Calculated {map.Artist} - {map.Title}", i + 1, total);\n'
+        "                }\n"
+        "            });"
+    )
+    if old_recalc in qct and "RunInTransaction" not in qct:
+        qct = qct.replace(old_recalc, new_recalc)
+        qs_cache.write_text(qct, encoding="utf-8")
+
+# 12) Wobble.Platform.Utils.NativeUtils & Clipboard.NativeClipboard en Android (evitar NotImplementedException en GameplayScreen)
+utils_cs = root / "Wobble" / "Wobble" / "Platform" / "Utils.cs"
+if utils_cs.is_file():
+    ut = utils_cs.read_text(encoding="utf-8-sig")
+    if "AndroidUtils" not in ut:
+        old_getter = (
+            "        public static Utils NativeUtils\n"
+            "        {\n"
+            "            get\n"
+            "            {\n"
+            "                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))\n"
+            "                    return new WindowsUtils();\n\n"
+            "                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))\n"
+            "                    return new LinuxUtils();\n\n"
+            "                if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))\n"
+            "                    return new OsxUtils();\n\n"
+            "                throw new NotImplementedException();\n"
+            "            }\n"
+            "        }"
+        )
+        new_getter = (
+            "        private static readonly Utils _androidUtils = new AndroidUtils();\n\n"
+            "        public static Utils NativeUtils\n"
+            "        {\n"
+            "            get\n"
+            "            {\n"
+            "                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))\n"
+            "                    return new WindowsUtils();\n"
+            "                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))\n"
+            "                    return new LinuxUtils();\n"
+            "                if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))\n"
+            "                    return new OsxUtils();\n"
+            "                return _androidUtils;\n"
+            "            }\n"
+            "        }"
+        )
+        old_end = (
+            "        public string MimeType { get; set; }\n"
+            "    }\n"
+            "}"
+        )
+        new_end = (
+            "        public string MimeType { get; set; }\n"
+            "    }\n\n"
+            "    internal sealed class AndroidUtils : Utils\n"
+            "    {\n"
+            "        public override void HighlightInFileManager(string path) { }\n"
+            "        public override void OpenNatively(string path) { }\n"
+            "        public override void RegisterURIScheme(string scheme, string friendlyName) { }\n"
+            "        public override void RegisterFileAssociations(IReadOnlyDictionary<string, FileAssociation> associations, string applicationIconPath) { }\n"
+            '        public override void ShowErrorMessage(string title, string message) => global::Wobble.Logging.Logger.Error($"[{title}] {message}", global::Wobble.Logging.LogType.Runtime);\n'
+            "        public override void EnableWindowsKey() { }\n"
+            "        public override void DisableWindowsKey() { }\n"
+            "    }\n"
+            "}"
+        )
+        if old_getter in ut and old_end in ut:
+            ut = ut.replace(old_getter, new_getter).replace(old_end, new_end)
+            utils_cs.write_text(ut, encoding="utf-8")
+
+clip_cs = root / "Wobble" / "Wobble" / "Platform" / "Clipboard.cs"
+if clip_cs.is_file():
+    ct = clip_cs.read_text(encoding="utf-8-sig")
+    if "AndroidClipboard" not in ct:
+        old_c_ret = "                return null;"
+        new_c_ret = "                return _androidClipboard;"
+        old_c_top = "        public static Clipboard NativeClipboard"
+        new_c_top = "        private static readonly Clipboard _androidClipboard = new AndroidClipboard();\n\n        public static Clipboard NativeClipboard"
+        old_c_end = (
+            "        public abstract void SetText(string selectedText);\n"
+            "    }\n"
+            "}"
+        )
+        new_c_end = (
+            "        public abstract void SetText(string selectedText);\n"
+            "    }\n\n"
+            "    internal sealed class AndroidClipboard : Clipboard\n"
+            "    {\n"
+            '        private string _text = "";\n'
+            "        public override string GetText() => _text;\n"
+            '        public override void SetText(string selectedText) => _text = selectedText ?? "";\n'
+            "    }\n"
+            "}"
+        )
+        if old_c_top in ct and old_c_ret in ct and old_c_end in ct:
+            ct = ct.replace(old_c_top, new_c_top).replace(old_c_ret, new_c_ret).replace(old_c_end, new_c_end)
+            clip_cs.write_text(ct, encoding="utf-8")
+
+# 13) QuaverGame.Update / Draw: capturar excepciones sin colgar SyncContext.Send (evita ANR "Quaver no responde")
+qg_cs = root / "Quaver.Shared" / "QuaverGame.cs"
+if qg_cs.is_file():
+    qgt = qg_cs.read_text(encoding="utf-8-sig")
+    has_diag_qg = (root / "Wobble" / "Wobble" / "Logging" / "AndroidDiagnostics.cs").is_file()
+    if "_androidFatalStopped" not in qgt and has_diag_qg:
+        old_upd = (
+            "        protected override void Update(GameTime gameTime)\n"
+            "        {\n"
+            "            if (!IsReadyToUpdate)\n"
+            "                return;"
+        )
+        new_upd = (
+            "        private bool _androidFatalStopped;\n\n"
+            "        protected override void Update(GameTime gameTime)\n"
+            "        {\n"
+            "            if (_androidFatalStopped || !IsReadyToUpdate)\n"
+            "                return;\n"
+            "            try\n"
+            "            {"
+        )
+        old_upd_end_android = (
+            "            if (!global::System.OperatingSystem.IsAndroid())\n"
+            "                Window.AllowUserResizing = QuaverWindowManager.CanChangeResolutionOnScene;\n"
+            "        }"
+        )
+        old_upd_end_plain = (
+            "            Window.AllowUserResizing = QuaverWindowManager.CanChangeResolutionOnScene;\n"
+            "        }"
+        )
+        new_upd_end_tail = (
+            "            }\n"
+            "            catch (Exception ex)\n"
+            "            {\n"
+            "                _androidFatalStopped = true;\n"
+            '                global::Wobble.Logging.AndroidDiagnostics.Fatal("QuaverGame.Update", ex);\n'
+            "            }\n"
+            "        }"
+        )
+        old_drw = (
+            "        protected override void Draw(GameTime gameTime)\n"
+            "        {\n"
+            "            if (!IsReadyToUpdate)\n"
+            "                return;"
+        )
+        new_drw = (
+            "        protected override void Draw(GameTime gameTime)\n"
+            "        {\n"
+            "            if (_androidFatalStopped || !IsReadyToUpdate)\n"
+            "                return;\n"
+            "            try\n"
+            "            {"
+        )
+        old_drw_end = (
+            "            ClearAlphaChannel(gameTime);\n"
+            "        }"
+        )
+        new_drw_end = (
+            "            ClearAlphaChannel(gameTime);\n"
+            "            }\n"
+            "            catch (Exception ex)\n"
+            "            {\n"
+            "                _androidFatalStopped = true;\n"
+            '                global::Wobble.Logging.AndroidDiagnostics.Fatal("QuaverGame.Draw", ex);\n'
+            "            }\n"
+            "        }"
+        )
+        if old_upd in qgt and old_drw in qgt and old_drw_end in qgt and (old_upd_end_android in qgt or old_upd_end_plain in qgt):
+            qgt = qgt.replace(old_upd, new_upd, 1)
+            if old_upd_end_android in qgt:
+                qgt = qgt.replace(old_upd_end_android, "            if (!global::System.OperatingSystem.IsAndroid())\n                Window.AllowUserResizing = QuaverWindowManager.CanChangeResolutionOnScene;\n" + new_upd_end_tail, 1)
+            else:
+                qgt = qgt.replace(old_upd_end_plain, "            Window.AllowUserResizing = QuaverWindowManager.CanChangeResolutionOnScene;\n" + new_upd_end_tail, 1)
+            qgt = qgt.replace(old_drw, new_drw, 1).replace(old_drw_end, new_drw_end, 1)
+            qg_cs.write_text(qgt, encoding="utf-8") 
