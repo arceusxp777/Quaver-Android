@@ -1050,3 +1050,256 @@ if init_scr.is_file():
     elif old_ofu_plain in it:
         it = it.replace(old_ofu_plain, new_ofu)
         init_scr.write_text(it, encoding="utf-8") 
+        # 11) Wobble.Graphics.Shaders.Shader: validacion defensiva de byte[]/MGFX antes de BinaryReader, try-catch y fallback MissingShader
+shader_cs = root / "Wobble" / "Wobble" / "Graphics" / "Shaders" / "Shader.cs"
+if shader_cs.is_file():
+    st = shader_cs.read_text(encoding="utf-8-sig")
+    if "MissingShader" not in st:
+        has_diag = (root / "Wobble" / "Wobble" / "Logging" / "AndroidDiagnostics.cs").is_file()
+        diag_trace = '            global::Wobble.Logging.AndroidDiagnostics.Trace(msg);\n' if has_diag else ''
+        new_shader = (
+            "using System;\n"
+            "using System.Collections.Generic;\n"
+            "using System.Diagnostics;\n"
+            "using System.IO;\n"
+            "using Microsoft.Xna.Framework;\n"
+            "using Microsoft.Xna.Framework.Graphics;\n"
+            "using Wobble.Logging;\n\n"
+            "namespace Wobble.Graphics.Shaders\n"
+            "{\n"
+            "    public class Shader : IDisposable\n"
+            "    {\n"
+            '        private const int MgfxHeaderSignature = 0x5846474D; // "MGFX"\n'
+            "        private const int MinMgfxHeaderLength = 10;\n"
+            '        public const string MissingShaderName = "MissingShader";\n\n'
+            "        /// <summary>\n"
+            "        ///     The loaded shader effect.\n"
+            "        /// </summary>\n"
+            "        public Effect ShaderEffect { get; set; }\n\n"
+            "        /// <summary>\n"
+            "        ///     The shader resource name or caller identifier.\n"
+            "        /// </summary>\n"
+            "        public string ShaderName { get; }\n\n"
+            "        /// <summary>\n"
+            "        ///     True if the shader stream was invalid or truncated and fell back to MissingShader.\n"
+            "        /// </summary>\n"
+            "        public bool IsMissingShader { get; private set; }\n\n"
+            "        /// <summary>\n"
+            "        ///     If this shader instance owns the underlying effect and should dispose it.\n"
+            "        ///     Set to false for shared effects.\n"
+            "        /// </summary>\n"
+            "        public bool OwnsShaderEffect { get; }\n\n"
+            "        /// <summary>\n"
+            "        ///     If the shader has already been disposed of.\n"
+            "        /// </summary>\n"
+            "        public bool IsDisposed { get; private set; }\n\n"
+            "        /// <summary>\n"
+            "        ///     The parameters of the shader. Takes in any type of object.\n"
+            "        ///         Format: {param_name, value}\n"
+            "        /// </summary>\n"
+            "        public Dictionary<string, object> Parameters { get; }\n\n"
+            "        /// <summary>\n"
+            "        ///     Loads a shader from a byte array.\n"
+            "        /// </summary>\n"
+            '        /// <param name="data"></param>\n'
+            '        /// <param name="parameters"></param>\n'
+            "        public Shader(byte[] data, Dictionary<string, object> parameters)\n"
+            "            : this(data, parameters, null)\n"
+            "        {\n"
+            "        }\n\n"
+            "        /// <summary>\n"
+            "        ///     Loads a shader from a byte array with explicit resource name diagnostics.\n"
+            "        /// </summary>\n"
+            '        /// <param name="data"></param>\n'
+            '        /// <param name="parameters"></param>\n'
+            '        /// <param name="shaderName"></param>\n'
+            "        public Shader(byte[] data, Dictionary<string, object> parameters, string shaderName)\n"
+            "        {\n"
+            "            ShaderName = ResolveShaderName(shaderName);\n"
+            "            Parameters = parameters ?? new Dictionary<string, object>();\n\n"
+            "            if (data == null || data.Length < MinMgfxHeaderLength ||\n"
+            "                data[0] != (byte)'M' || data[1] != (byte)'G' || data[2] != (byte)'F' || data[3] != (byte)'X')\n"
+            "            {\n"
+            '                FallbackToMissingShader($"Missing or invalid MGFX Effect header (length={data?.Length ?? 0}).");\n'
+            "                return;\n"
+            "            }\n\n"
+            "            try\n"
+            "            {\n"
+            "                using (var stream = new MemoryStream(data, false))\n"
+            "                using (var reader = new BinaryReader(stream))\n"
+            "                {\n"
+            "                    var signature = reader.ReadInt32();\n"
+            "                    var version = reader.ReadByte();\n"
+            "                    var profile = reader.ReadByte();\n"
+            "                    _ = reader.ReadInt32();\n\n"
+            "                    if (signature != MgfxHeaderSignature || version == 0)\n"
+            "                    {\n"
+            '                        FallbackToMissingShader($"Corrupted Effect header (sig=0x{signature:X8}, ver={version}, prof={profile}).");\n'
+            "                        return;\n"
+            "                    }\n\n"
+            "                    if (version >= 10)\n"
+            "                    {\n"
+            "                        if (stream.Length < MinMgfxHeaderLength + 4)\n"
+            "                        {\n"
+            '                            FallbackToMissingShader($"Truncated MGFX v{version} shader stream (length={stream.Length}).");\n'
+            "                            return;\n"
+            "                        }\n\n"
+            "                        stream.Seek(-4, SeekOrigin.End);\n"
+            "                        var tailSignature = reader.ReadInt32();\n\n"
+            "                        if (tailSignature != MgfxHeaderSignature)\n"
+            "                        {\n"
+            '                            FallbackToMissingShader($"Truncated MGFX v{version} tail signature (got=0x{tailSignature:X8}, length={stream.Length}).");\n'
+            "                            return;\n"
+            "                        }\n"
+            "                    }\n"
+            "                }\n\n"
+            "                ShaderEffect = new Effect(GameBase.Game.GraphicsDevice, data);\n"
+            "                OwnsShaderEffect = true;\n"
+            "                SetParameters(false);\n"
+            "            }\n"
+            "            catch (EndOfStreamException ex)\n"
+            "            {\n"
+            '                FallbackToMissingShader($"Truncated shader stream (EndOfStreamException: {ex.Message}, length={data.Length}).");\n'
+            "            }\n"
+            "            catch (Exception ex)\n"
+            "            {\n"
+            '                FallbackToMissingShader($"Failed to load shader Effect ({ex.GetType().Name}: {ex.Message}, length={data.Length}).");\n'
+            "            }\n"
+            "        }\n\n"
+            "        /// <summary>\n"
+            "        ///     Creates a shader from a given effect.\n"
+            "        /// </summary>\n"
+            '        /// <param name="effect"></param>\n'
+            '        /// <param name="parameters"></param>\n'
+            '        /// <param name="ownsShaderEffect">Whether this shader should dispose <paramref name="effect"/>.</param>\n'
+            "        public Shader(Effect effect, Dictionary<string, object> parameters, bool ownsShaderEffect = true)\n"
+            "        {\n"
+            "            ShaderName = ResolveShaderName(effect?.Name);\n"
+            "            ShaderEffect = effect;\n"
+            "            OwnsShaderEffect = ownsShaderEffect && effect != null;\n"
+            "            Parameters = parameters ?? new Dictionary<string, object>();\n"
+            "            if (ShaderEffect == null)\n"
+            '                FallbackToMissingShader("Provided Effect instance was null.");\n'
+            "            else\n"
+            "                SetParameters(false);\n"
+            "        }\n\n"
+            "        private static string ResolveShaderName(string shaderName)\n"
+            "        {\n"
+            "            if (!string.IsNullOrEmpty(shaderName))\n"
+            "                return shaderName;\n\n"
+            "            try\n"
+            "            {\n"
+            "                var trace = new StackTrace(false);\n"
+            "                for (var i = 0; i < trace.FrameCount; i++)\n"
+            "                {\n"
+            "                    var type = trace.GetFrame(i)?.GetMethod()?.DeclaringType;\n"
+            "                    if (type != null && type != typeof(Shader))\n"
+            "                        return type.FullName;\n"
+            "                }\n"
+            "            }\n"
+            "            catch\n"
+            "            {\n"
+            "            }\n\n"
+            '            return "UnknownShader";\n'
+            "        }\n\n"
+            "        private void FallbackToMissingShader(string reason)\n"
+            "        {\n"
+            "            IsMissingShader = true;\n"
+            "            ShaderEffect = null;\n"
+            "            var msg = $\"[{MissingShaderName}] Shader '{ShaderName}' failed to load; using {MissingShaderName} fallback. Reason: {reason}\";\n"
+            "            Logger.Warning(msg, LogType.Runtime);\n"
+            f"{diag_trace}"
+            "        }\n\n"
+            "        /// <inheritdoc />\n"
+            "        /// <summary>\n"
+            "        /// </summary>\n"
+            "        public void Dispose()\n"
+            "        {\n"
+            "            if (OwnsShaderEffect)\n"
+            "                ShaderEffect?.Dispose();\n\n"
+            "            IsDisposed = true;\n"
+            "        }\n\n"
+            "        /// <summary>\n"
+            "        ///     Sets all the shader parameters based on what's in the dictionary.\n"
+            "        /// </summary>\n"
+            "        public void SetParameters(bool setDictionaryValues)\n"
+            "        {\n"
+            "            if (ShaderEffect == null || Parameters == null)\n"
+            "                return;\n\n"
+            "            foreach (var param in Parameters)\n"
+            "                SetParameter(param.Key, param.Value, setDictionaryValues);\n"
+            "        }\n\n"
+            "        /// <summary>\n"
+            "        ///     Sets an individual parameter\n"
+            "        /// </summary>\n"
+            '        /// <param name="key"></param>\n'
+            '        /// <param name="value"></param>\n'
+            '        /// <param name="setDictionaryValue"></param>\n'
+            '        /// <exception cref="InvalidTypeParameterException"></exception>\n'
+            "        public void SetParameter(string key, object value, bool setDictionaryValue)\n"
+            "        {\n"
+            "            if (ShaderEffect == null)\n"
+            "                return;\n\n"
+            "            // Set the parameter in the dictionary.\n"
+            "            if (setDictionaryValue)\n"
+            "                Parameters[key] = value;\n\n"
+            "            if (value == null || ShaderEffect.Parameters[key] == null)\n"
+            "                return;\n\n"
+            "            var type = value.GetType();\n\n"
+            "            // Set the parameter in the shader.\n"
+            "            if (type == typeof(bool))\n"
+            "                ShaderEffect.Parameters[key].SetValue((bool)value);\n"
+            "            else if (type == typeof(float))\n"
+            "                ShaderEffect.Parameters[key].SetValue((float)value);\n"
+            "            else if (type == typeof(float[]))\n"
+            "                ShaderEffect.Parameters[key].SetValue((float[])value);\n"
+            "            else if (type == typeof(int))\n"
+            "                ShaderEffect.Parameters[key].SetValue((int)value);\n"
+            "            else if (type == typeof(Texture))\n"
+            "                ShaderEffect.Parameters[key].SetValue((Texture)value);\n"
+            "            else if (type == typeof(Matrix))\n"
+            "                ShaderEffect.Parameters[key].SetValue((Matrix)value);\n"
+            "            else if (type == typeof(Matrix[]))\n"
+            "                ShaderEffect.Parameters[key].SetValue((Matrix[])value);\n"
+            "            else if (type == typeof(Quaternion))\n"
+            "                ShaderEffect.Parameters[key].SetValue((Quaternion)value);\n"
+            "            else if (type == typeof(Vector2))\n"
+            "                ShaderEffect.Parameters[key].SetValue((Vector2)value);\n"
+            "            else if (type == typeof(Vector2[]))\n"
+            "                ShaderEffect.Parameters[key].SetValue((Vector2[])value);\n"
+            "            else if (type == typeof(Vector3))\n"
+            "                ShaderEffect.Parameters[key].SetValue((Vector3)value);\n"
+            "            else if (type == typeof(Vector3[]))\n"
+            "                ShaderEffect.Parameters[key].SetValue((Vector3[])value);\n"
+            "            else if (type == typeof(Vector4))\n"
+            "                ShaderEffect.Parameters[key].SetValue((Vector4)value);\n"
+            "            else if (type == typeof(Vector4[]))\n"
+            "                ShaderEffect.Parameters[key].SetValue((Vector4[])value);\n"
+            "            else\n"
+            '                throw new InvalidTypeParameterException($"ShaderEffect Parameter {key} has invalid type: {type}");\n'
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+        shader_cs.write_text(new_shader, encoding="utf-8")
+
+for rel, res_name in (
+    ("Quaver.Shared/Screens/Gameplay/UI/Health/HealthBar.cs", "Quaver.Resources/Shaders/semi-transparent.mgfxo"),
+    ("Quaver.Shared/Screens/Gameplay/UI/Replays/ReplayController.cs", "Quaver.Resources/Shaders/semi-transparent.mgfxo"),
+    ("Wobble/Wobble.Tests/Screens/Tests/DrawingSprites/TestDrawingSpritesScreenView.cs", "Wobble.Tests.Resources/Shaders/semi-transparent.mgfxo"),
+):
+    sp = root / rel
+    if not sp.is_file():
+        continue
+    spt = sp.read_text(encoding="utf-8-sig")
+    old_call = (
+        '                        {"p_alpha", 0f}\n'
+        "                    })"
+    )
+    new_call = (
+        '                        {"p_alpha", 0f}\n'
+        f'                    }}, "{res_name}")'
+    )
+    if old_call in spt and f'}}, "{res_name}")' not in spt:
+        spt = spt.replace(old_call, new_call)
+        sp.write_text(spt, encoding="utf-8") 
