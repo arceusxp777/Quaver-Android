@@ -753,11 +753,7 @@ namespace QuaverAndroid
                     return sr.ReadToEnd();
             }
         } 
-        private void ShowReport(string text)
-        {
-            _reportShown = true;
-            if (_gameView != null)
-                _gameView.Visibility = ViewStates.Gone; 
+        
         private string BuildLogText()
         {
             var sb = new StringBuilder();
@@ -790,6 +786,7 @@ namespace QuaverAndroid
 
         private void ShowReport(string text)
         {
+        _reportShown = true; 
             if (_gameView != null)
                 _gameView.Visibility = ViewStates.Gone;
 
