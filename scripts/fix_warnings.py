@@ -807,3 +807,246 @@ namespace QuaverAndroid
     }
 }
 """, encoding="utf-8")
+    # 7) SteamManager y llamadas Steamworks seguras en Android (evitar DllNotFoundException: steam_api)
+sm = root / "Quaver.Shared" / "Online" / "SteamManager.cs"
+if sm.is_file():
+    smt = sm.read_text(encoding="utf-8-sig")
+    sm_changed = False
+
+    old_appid = "        public static uint ApplicationId => 980610;"
+    new_appid = (
+        "        public static uint ApplicationId => 980610;\n\n"
+        "        /// <summary>\n"
+        "        ///     Devuelve el SteamID local si Steam está inicializado; 0 en Android/offline.\n"
+        "        /// </summary>\n"
+        "        public static ulong GetSteamIdOrZero() => IsInitialized ? SteamUser.GetSteamID().m_SteamID : 0;\n\n"
+        "        /// <summary>\n"
+        "        ///     Devuelve el nombre de Steam si está inicializado; ConfigManager.Username en Android/offline.\n"
+        "        /// </summary>\n"
+        '        public static string GetPersonaNameOrDefault() => IsInitialized ? SteamFriends.GetPersonaName() : (ConfigManager.Username?.Value ?? "Player");'
+    )
+    if old_appid in smt and "GetSteamIdOrZero()" not in smt:
+        smt = smt.replace(old_appid, new_appid)
+        sm_changed = True
+
+    old_avatar_req = (
+        "        public static void SendAvatarRetrievalRequest(ulong steamId) => ThreadScheduler.Run(() =>\n"
+        "        {\n"
+        "            var info = SteamFriends.RequestUserInformation(new CSteamID(steamId), false);\n"
+        '            Logger.Debug($"Requested Steam user information for user: {steamId} - {info}", LogType.Network);\n\n'
+        "            if (!info)\n"
+        "                LoadAvatarIfNotExists(steamId);\n"
+        "        });"
+    )
+    new_avatar_req = (
+        "        public static void SendAvatarRetrievalRequest(ulong steamId)\n"
+        "        {\n"
+        "            if (global::System.OperatingSystem.IsAndroid() || !IsInitialized || steamId == 0)\n"
+        "                return;\n\n"
+        "            ThreadScheduler.Run(() =>\n"
+        "            {\n"
+        "                var info = SteamFriends.RequestUserInformation(new CSteamID(steamId), false);\n"
+        '                Logger.Debug($"Requested Steam user information for user: {steamId} - {info}", LogType.Network);\n\n'
+        "                if (!info)\n"
+        "                    LoadAvatarIfNotExists(steamId);\n"
+        "            });\n"
+        "        }"
+    )
+    if old_avatar_req in smt:
+        smt = smt.replace(old_avatar_req, new_avatar_req)
+        sm_changed = True
+
+    old_get_avatar = "            if (UserAvatars.ContainsKey(steamId))"
+    new_get_avatar = "            if (UserAvatars != null && UserAvatars.ContainsKey(steamId))"
+    if old_get_avatar in smt and new_get_avatar not in smt:
+        smt = smt.replace(old_get_avatar, new_get_avatar)
+        sm_changed = True
+
+    if sm_changed:
+        sm.write_text(smt, encoding="utf-8")
+
+steam_id_callers = (
+    "Quaver.Shared/Screens/Gameplay/Rulesets/Keys/GameplayRulesetKeys.cs",
+    "Quaver.Shared/Screens/Gameplay/GameplayScreenView.cs",
+    "Quaver.Shared/Screens/Gameplay/UI/Scoreboard/ScoreboardUser.cs",
+    "Quaver.Shared/Screens/Results/UI/Header/Contents/ResultsScreenHeaderAvatar.cs",
+    "Quaver.Shared/Screens/Selection/UI/Profile/LocalProfileBanner.cs",
+    "Quaver.Shared/Screens/Selection/UI/Leaderboard/Components/DrawableLeaderboardScoreContainer.cs",
+    "Quaver.Shared/Graphics/Menu/Border/Components/Users/DrawableLoggedInUser.cs",
+    "Quaver.Shared/Graphics/Online/OnlinePlayercard.cs",
+    "Quaver.Shared/Graphics/Online/Playercard/UserPlayercard.cs",
+    "Quaver.Shared/Screens/V2/UI/ScreenNavigation.cs",
+    "Quaver.Shared/Screens/Initialization/InitializationScreen.cs",
+    "Quaver.Shared/Screens/V2/Initialization/InitializationScreen.cs",
+    "Quaver.Shared/Graphics/Dialogs/Online/CreatingAccountDialog.cs",
+    "Quaver.Shared/Graphics/Online/Username/UsernameSelectionTextbox.cs",
+)
+for rel in steam_id_callers:
+    p = root / rel
+    if not p.is_file():
+        continue
+    t = p.read_text(encoding="utf-8-sig")
+    nt = t.replace(
+        "SteamUser.GetSteamID().m_SteamID",
+        "global::Quaver.Shared.Online.SteamManager.GetSteamIdOrZero()",
+    ).replace(
+        "SteamFriends.GetPersonaName()",
+        "global::Quaver.Shared.Online.SteamManager.GetPersonaNameOrDefault()",
+    )
+    if nt != t:
+        p.write_text(nt, encoding="utf-8")
+
+sa = root / "Quaver.Shared" / "Online" / "SteamAchievements.cs"
+if sa.is_file():
+    sat = sa.read_text(encoding="utf-8-sig")
+    sa_changed = False
+    old_sa_ctor = "            UserStatsReceivedCallResult = CallResult<UserStatsReceived_t>.Create(OnUserStatsReceived);"
+    new_sa_ctor = (
+        "            if (SteamManager.IsInitialized)\n"
+        "                UserStatsReceivedCallResult = CallResult<UserStatsReceived_t>.Create(OnUserStatsReceived);"
+    )
+    if old_sa_ctor in sat and "if (SteamManager.IsInitialized)\n                UserStatsReceivedCallResult" not in sat:
+        sat = sat.replace(old_sa_ctor, new_sa_ctor)
+        sa_changed = True
+
+    old_sa_unlock = (
+        "        public void Unlock()\n"
+        "        {\n"
+        "            var call = SteamUserStats.RequestUserStats(SteamUser.GetSteamID());"
+    )
+    new_sa_unlock = (
+        "        public void Unlock()\n"
+        "        {\n"
+        "            if (!SteamManager.IsInitialized)\n"
+        "            {\n"
+        "                Complete();\n"
+        "                return;\n"
+        "            }\n\n"
+        "            var call = SteamUserStats.RequestUserStats(SteamUser.GetSteamID());"
+    )
+    if old_sa_unlock in sat:
+        sat = sat.replace(old_sa_unlock, new_sa_unlock)
+        sa_changed = True
+    if sa_changed:
+        sa.write_text(sat, encoding="utf-8")
+
+sw = root / "Quaver.Shared" / "Online" / "SteamWorkshopItem.cs"
+if sw.is_file():
+    swt = sw.read_text(encoding="utf-8-sig")
+    sw_changed = False
+    old_sw_up = (
+        "        public void Upload()\n"
+        "        {\n"
+        "            Current = this;"
+    )
+    new_sw_up = (
+        "        public void Upload()\n"
+        "        {\n"
+        "            if (!SteamManager.IsInitialized)\n"
+        "            {\n"
+        "                HasUploaded = true;\n"
+        "                return;\n"
+        "            }\n\n"
+        "            Current = this;"
+    )
+    if old_sw_up in swt and "if (!SteamManager.IsInitialized)\n            {\n                HasUploaded = true;" not in swt:
+        swt = swt.replace(old_sw_up, new_sw_up)
+        sw_changed = True
+
+    old_sw_prog = (
+        "        public int GetUploadProgressPercentage()\n"
+        "        {\n"
+        "            SteamUGC.GetItemUpdateProgress(Handle, out var bytesProcessed, out var bytesTotal);"
+    )
+    new_sw_prog = (
+        "        public int GetUploadProgressPercentage()\n"
+        "        {\n"
+        "            if (!SteamManager.IsInitialized)\n"
+        "                return 0;\n\n"
+        "            SteamUGC.GetItemUpdateProgress(Handle, out var bytesProcessed, out var bytesTotal);"
+    )
+    if old_sw_prog in swt:
+        swt = swt.replace(old_sw_prog, new_sw_prog)
+        sw_changed = True
+    if sw_changed:
+        sw.write_text(swt, encoding="utf-8")
+
+# 8) Evitar ANR de arranque (>5s en hilo UI):
+#    a) SkinManager.LoadEditorSkin(): tratar DefaultEditorSkin == null como igual a DefaultSkin (evita cargar el skin 2 veces)
+skm = root / "Quaver.Shared" / "Skinning" / "SkinManager.cs"
+if skm.is_file():
+    skmt = skm.read_text(encoding="utf-8-sig")
+    old_same = "var isSameDefaultSkin = ConfigManager.DefaultSkin.Value == ConfigManager.DefaultEditorSkin.Value;"
+    new_same = "var isSameDefaultSkin = ConfigManager.DefaultEditorSkin.Value == null || ConfigManager.DefaultSkin.Value == ConfigManager.DefaultEditorSkin.Value;"
+    if old_same in skmt:
+        skmt = skmt.replace(old_same, new_same)
+        skm.write_text(skmt, encoding="utf-8")
+
+#    b) InitializationScreen: dividir fuentes (frame 1) / skin (frame 2) / InitializationTask (frame 3) para ceder al Looper Android
+init_scr = root / "Quaver.Shared" / "Screens" / "Initialization" / "InitializationScreen.cs"
+if init_scr.is_file():
+    it = init_scr.read_text(encoding="utf-8-sig")
+    old_ofu_traced = (
+        "        public override void OnFirstUpdate()\n"
+        "        {\n"
+        "            GameBase.Game.GlobalUserInterface.Cursor.Alpha = 0;\n\n"
+        '            global::Wobble.Logging.AndroidDiagnostics.Trace("InitScreen: Loading skin");\n'
+        '            Logger.Important($"Loading skin...", LogType.Runtime);\n'
+        "            // Avoid loading SoundEffects before Audio Device hasn't been set yet which leads to sound effects not working. \n"
+        "            SkinManager.Load(UniversalSkinElementsLoadFlags.All & ~UniversalSkinElementsLoadFlags.SoundEffects);\n\n"
+        '            Logger.Important($"Loading fonts...", LogType.Runtime);\n'
+        "            Fonts.LoadWobbleFonts();\n\n"
+        "            InitializationTask.Run(0);\n\n"
+        "            base.OnFirstUpdate();\n"
+        "        }"
+    )
+    old_ofu_plain = (
+        "        public override void OnFirstUpdate()\n"
+        "        {\n"
+        "            GameBase.Game.GlobalUserInterface.Cursor.Alpha = 0;\n\n"
+        '            Logger.Important($"Loading skin...", LogType.Runtime);\n'
+        "            // Avoid loading SoundEffects before Audio Device hasn't been set yet which leads to sound effects not working. \n"
+        "            SkinManager.Load(UniversalSkinElementsLoadFlags.All & ~UniversalSkinElementsLoadFlags.SoundEffects);\n\n"
+        '            Logger.Important($"Loading fonts...", LogType.Runtime);\n'
+        "            Fonts.LoadWobbleFonts();\n\n"
+        "            InitializationTask.Run(0);\n\n"
+        "            base.OnFirstUpdate();\n"
+        "        }"
+    )
+    new_ofu = (
+        "        private int _androidInitStep;\n\n"
+        "        public override void OnFirstUpdate()\n"
+        "        {\n"
+        "            GameBase.Game.GlobalUserInterface.Cursor.Alpha = 0;\n\n"
+        '            global::Wobble.Logging.AndroidDiagnostics.Trace("InitScreen: Loading fonts");\n'
+        '            Logger.Important($"Loading fonts...", LogType.Runtime);\n'
+        "            Fonts.LoadWobbleFonts();\n"
+        "            _androidInitStep = 1;\n\n"
+        "            base.OnFirstUpdate();\n"
+        "        }\n\n"
+        "        public override void Update(global::Microsoft.Xna.Framework.GameTime gameTime)\n"
+        "        {\n"
+        "            if (_androidInitStep == 1)\n"
+        "            {\n"
+        "                _androidInitStep = 2;\n"
+        '                global::Wobble.Logging.AndroidDiagnostics.Trace("InitScreen: Loading skin");\n'
+        '                Logger.Important($"Loading skin...", LogType.Runtime);\n'
+        "                SkinManager.Load(UniversalSkinElementsLoadFlags.All & ~UniversalSkinElementsLoadFlags.SoundEffects);\n"
+        "                base.Update(gameTime);\n"
+        "                return;\n"
+        "            }\n\n"
+        "            if (_androidInitStep == 2)\n"
+        "            {\n"
+        "                _androidInitStep = 3;\n"
+        '                global::Wobble.Logging.AndroidDiagnostics.Trace("InitScreen: InitializationTask.Run");\n'
+        "                InitializationTask.Run(0);\n"
+        "            }\n\n"
+        "            base.Update(gameTime);\n"
+        "        }"
+    )
+    if old_ofu_traced in it:
+        it = it.replace(old_ofu_traced, new_ofu)
+        init_scr.write_text(it, encoding="utf-8")
+    elif old_ofu_plain in it:
+        it = it.replace(old_ofu_plain, new_ofu)
+        init_scr.write_text(it, encoding="utf-8") 
