@@ -3230,7 +3230,7 @@ namespace Quaver.Shared.Online.Workshop
 
             try
             {
-                var tok = await _steamContent.GetCDNAuthToken(QuaverAppId, QuaverWorkshopDepotId, server.Host).ToTask().ConfigureAwait(false);
+                var tok = await _steamContent.GetCDNAuthToken(QuaverAppId, QuaverWorkshopDepotId, server.Host).ConfigureAwait(false); 
                 if (tok.Result == EResult.OK && !string.IsNullOrEmpty(tok.Token))
                 {
                     _cdnTokens[key] = tok.Token;
@@ -4537,7 +4537,7 @@ namespace Quaver.Shared.Screens.Workshop
             _progressFill = new Sprite
             {
                 Parent = _progressBg,
-                Position = Vector2.Zero,
+                Position = new ScalableVector2(0, 0), 
                 Size = new ScalableVector2(0, 24f),
                 Tint = ColorHelper.HexToColor("#22C55E")
             };
