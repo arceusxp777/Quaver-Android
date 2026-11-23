@@ -509,7 +509,17 @@ if es.is_file():
         est = est.replace(old_lp, new_lp)
         es.write_text(est, encoding="utf-8")
 
-# 6) MainActivity: HUD visible desde el primer instante + juego en capa inferior
+# 6) MainActivity: HUD visible desde el primer instante + Safe Area (notch) + Haptica (Vibrator) + VIBRATE
+manifest_xml = root / "android-head" / "AndroidManifest.xml"
+if manifest_xml.is_file():
+    mxt = manifest_xml.read_text(encoding="utf-8-sig")
+    if "android.permission.VIBRATE" not in mxt:
+        mxt = mxt.replace(
+            '<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />',
+            '<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n  <uses-permission android:name="android.permission.VIBRATE" />',
+        )
+        manifest_xml.write_text(mxt, encoding="utf-8")
+
 ma = root / "android-head" / "MainActivity.cs"
 if ma.is_file():
     ma.write_text(r"""using System;
@@ -524,6 +534,7 @@ using Android.Views;
 using Android.Widget;
 using Microsoft.Xna.Framework;
 using Wobble.Logging;
+using Wobble.Platform;
 
 namespace QuaverAndroid
 {
@@ -538,16 +549,28 @@ namespace QuaverAndroid
         private FrameLayout _rootFrame;
         private TextView _statusText;
         private Handler _handler;
-        private volatile bool _reportShown; 
+        private volatile bool _reportShown;
+        private Vibrator _vibrator;
 
         protected override void OnCreate(Bundle bundle)
         {
             base.OnCreate(bundle);
             Window?.AddFlags(WindowManagerFlags.KeepScreenOn | WindowManagerFlags.Fullscreen);
+            if (Build.VERSION.SdkInt >= BuildVersionCodes.P && Window != null)
+            {
+                var lp = Window.Attributes;
+                if (lp != null)
+                {
+                    lp.LayoutInDisplayCutoutMode = LayoutInDisplayCutoutMode.ShortEdges;
+                    Window.Attributes = lp;
+                }
+            }
+
             var dataDir = FilesDir.AbsolutePath;
             Wobble.WobbleGame.WorkingDirectory = dataDir + "/";
             _crashFile = Path.Combine(dataDir, "informe-fallo.txt");
             HookCrashHandlers();
+            InitHaptics();
 
             foreach (var dir in new[] { "Songs", "Skins", "Screenshots", "Replays", "Backup", "Logs", "Workshop" })
             {
@@ -581,10 +604,9 @@ namespace QuaverAndroid
                 GravityFlags.Top | GravityFlags.Right));
 
             SetContentView(_rootFrame);
-
+            UpdateSafeAreaInsets();
             _handler = new Handler(Looper.MainLooper);
             ScheduleTracePoll();
-
             AndroidDiagnostics.Trace("01.OnCreate dataDir=" + dataDir);
 
             foreach (var lib in new[] { "bass", "bass_fx", "e_sqlite3", "SkiaSharp", "freetype", "openal32" })
@@ -624,30 +646,136 @@ namespace QuaverAndroid
             }
         }
 
+        public override void OnAttachedToWindow()
+        {
+            base.OnAttachedToWindow();
+            UpdateSafeAreaInsets();
+        }
+
+        public override void OnWindowFocusChanged(bool hasFocus)
+        {
+            base.OnWindowFocusChanged(hasFocus);
+            if (hasFocus)
+                UpdateSafeAreaInsets();
+        }
+
+        private void InitHaptics()
+        {
+            try
+            {
+                if (Build.VERSION.SdkInt >= BuildVersionCodes.S)
+                {
+                    var vm = GetSystemService(VibratorManagerService) as VibratorManager;
+                    _vibrator = vm?.DefaultVibrator;
+                }
+                else
+                {
+#pragma warning disable CS0618
+                    _vibrator = GetSystemService(VibratorService) as Vibrator;
+#pragma warning restore CS0618
+                }
+
+                if (_vibrator != null && _vibrator.HasVibrator)
+                {
+                    AndroidPlatformBridge.HasVibrator = true;
+                    AndroidPlatformBridge.VibrateHandler = (durationMs, amplitude) =>
+                    {
+                        try
+                        {
+                            if (_vibrator == null || !_vibrator.HasVibrator)
+                                return;
+
+                            if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
+                            {
+                                var eff = VibrationEffect.CreateOneShot(durationMs, amplitude);
+                                if (eff != null)
+                                    _vibrator.Vibrate(eff);
+                            }
+                            else
+                            {
+#pragma warning disable CS0618
+                                _vibrator.Vibrate(durationMs);
+#pragma warning restore CS0618
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    };
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void UpdateSafeAreaInsets()
+        {
+            try
+            {
+                var dm = Resources?.DisplayMetrics;
+                var w = dm != null && dm.WidthPixels > 0 ? (float)dm.WidthPixels : 1f;
+                var h = dm != null && dm.HeightPixels > 0 ? (float)dm.HeightPixels : 1f;
+                var insets = Window?.DecorView?.RootWindowInsets;
+                if (insets == null)
+                    return;
+
+                float left = 0f, top = 0f, right = 0f, bottom = 0f;
+                if (Build.VERSION.SdkInt >= BuildVersionCodes.P)
+                {
+                    var cutout = insets.DisplayCutout;
+                    if (cutout != null)
+                    {
+                        left = Math.Max(left, cutout.SafeInsetLeft / w);
+                        top = Math.Max(top, cutout.SafeInsetTop / h);
+                        right = Math.Max(right, cutout.SafeInsetRight / w);
+                        bottom = Math.Max(bottom, cutout.SafeInsetBottom / h);
+                    }
+                }
+
+                if (Build.VERSION.SdkInt >= BuildVersionCodes.R)
+                {
+                    var sys = insets.GetInsets(WindowInsets.Type.DisplayCutout() | WindowInsets.Type.SystemGestures());
+                    if (sys != null)
+                    {
+                        left = Math.Max(left, sys.Left / w);
+                        top = Math.Max(top, sys.Top / h);
+                        right = Math.Max(right, sys.Right / w);
+                        bottom = Math.Max(bottom, sys.Bottom / h);
+                    }
+                }
+
+                AndroidPlatformBridge.SafeInsetLeft = Math.Min(0.25f, Math.Max(0f, left));
+                AndroidPlatformBridge.SafeInsetTop = Math.Min(0.25f, Math.Max(0f, top));
+                AndroidPlatformBridge.SafeInsetRight = Math.Min(0.25f, Math.Max(0f, right));
+                AndroidPlatformBridge.SafeInsetBottom = Math.Min(0.25f, Math.Max(0f, bottom));
+            }
+            catch
+            {
+            }
+        }
+
         private void StartQuaver(string workDir)
         {
             Wobble.WobbleGame.WorkingDirectory = workDir;
-            Directory.SetCurrentDirectory(workDir);
             AndroidDiagnostics.Trace("02.Batteries_V2.Init");
             SQLitePCL.Batteries_V2.Init();
             AndroidDiagnostics.Trace("03.ConfigManager.Initialize");
-            Wobble.Logging.Logger.Initialize();
             Quaver.Shared.Config.ConfigManager.Initialize();
-            Quaver.Shared.Config.StructuredConfigManager.Initialize();
             System.Globalization.CultureInfo.DefaultThreadCurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+            System.Globalization.CultureInfo.DefaultThreadCurrentUICulture = System.Globalization.CultureInfo.InvariantCulture;
             System.Threading.Thread.CurrentThread.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
             System.Threading.Thread.CurrentThread.CurrentUICulture = System.Globalization.CultureInfo.InvariantCulture;
             AndroidDiagnostics.Trace("04.new QuaverGame");
             _game = new Quaver.Shared.QuaverGame();
             _gameView = (View)_game.Services.GetService(typeof(View));
             AndroidDiagnostics.Trace("05.AttachGameView view=" + (_gameView != null));
-
             if (_gameView != null && _rootFrame != null)
             {
                 _rootFrame.AddView(_gameView, 0, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
             }
-
+            UpdateSafeAreaInsets();
             AndroidDiagnostics.Trace("06.game.Run()");
             _game.Run();
         }
@@ -673,7 +801,8 @@ namespace QuaverAndroid
                 catch { }
                 ScheduleTracePoll();
             }, 600);
-        } 
+        }
+
         private void HookCrashHandlers()
         {
             AppDomain.CurrentDomain.UnhandledException += (s, e) =>
@@ -713,7 +842,8 @@ namespace QuaverAndroid
                 });
             }
             catch { }
-        } 
+        }
+
         private void WriteTextReport(string origin, string body)
         {
             try
@@ -743,6 +873,7 @@ namespace QuaverAndroid
             using (var sr = new StreamReader(fs))
                 return sr.ReadToEnd();
         }
+
         private static string ReadTailShared(string path, int maxBytes)
         {
             using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
@@ -752,8 +883,25 @@ namespace QuaverAndroid
                 using (var sr = new StreamReader(fs))
                     return sr.ReadToEnd();
             }
-        } 
-        
+        }
+
+        public override bool DispatchKeyEvent(KeyEvent e)
+        {
+            if (e != null && e.KeyCode == Keycode.VolumeDown && e.Action == KeyEventActions.Down)
+            {
+                try
+                {
+                    ShowReport(BuildLogText());
+                }
+                catch (Exception ex)
+                {
+                    Android.Util.Log.Error("QuaverAndroid", ex.ToString());
+                }
+                return true;
+            }
+            return base.DispatchKeyEvent(e);
+        }
+
         private string BuildLogText()
         {
             var sb = new StringBuilder();
@@ -786,10 +934,9 @@ namespace QuaverAndroid
 
         private void ShowReport(string text)
         {
-        _reportShown = true; 
+            _reportShown = true;
             if (_gameView != null)
                 _gameView.Visibility = ViewStates.Gone;
-
             var layout = new LinearLayout(this) { Orientation = Orientation.Vertical };
             layout.SetBackgroundColor(global::Android.Graphics.Color.Rgb(20, 20, 28));
             layout.SetPadding(32, 32, 32, 32);
@@ -830,7 +977,7 @@ namespace QuaverAndroid
         }
     }
 }
-""", encoding="utf-8")
+""", encoding="utf-8") 
     # 7) SteamManager y llamadas Steamworks seguras en Android (evitar DllNotFoundException: steam_api)
 sm = root / "Quaver.Shared" / "Online" / "SteamManager.cs"
 if sm.is_file():
