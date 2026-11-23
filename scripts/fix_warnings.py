@@ -1920,9 +1920,10 @@ if ma.is_file():
                                 var val = input.Text ?? string.Empty;
                                 onResult?.Invoke(val);
                             })
-                            .SetNegativeButton("Cancelar", (s, e) => { })
-                            .Create();
-
+                            .SetNegativeButton("Cancelar", (s, e) => onResult?.Invoke(null))
+                            .SetCancelable(false)
+                            .Create(); 
+                            
                         dlg.Window?.SetSoftInputMode(SoftInput.StateVisible);
                         dlg.Show();
                         input.RequestFocus();
@@ -2066,6 +2067,7 @@ using SteamKit2;
 using SteamKit2.Authentication;
 using SteamKit2.CDN;
 using SteamKit2.Internal;
+using CdnServer = SteamKit2.CDN.Server; 
 using Wobble;
 using Wobble.Logging;
 
@@ -2239,12 +2241,17 @@ namespace Quaver.Shared.Online.Workshop
         }
 
         public static string GetSessionFilePath()
-        {
-            var baseDir = WobbleGame.WorkingDirectory;
-            if (string.IsNullOrEmpty(baseDir))
-                baseDir = Directory.GetCurrentDirectory();
-            return Path.Combine(baseDir, "steam-session.json");
-        }
+     {
+         var baseDir = ConfigManager.GameDirectory?.Value;
+         if (string.IsNullOrWhiteSpace(baseDir))
+             baseDir = WobbleGame.WorkingDirectory;
+         if (string.IsNullOrWhiteSpace(baseDir))
+             baseDir = Environment.GetFolderPath(Environment.SpecialFolder.Personal);
+         if (string.IsNullOrWhiteSpace(baseDir))
+             baseDir = Directory.GetCurrentDirectory();
+         Directory.CreateDirectory(baseDir);
+         return Path.Combine(baseDir, "steam-session.json");
+     } 
 
         public static string GetWorkshopRootDir()
         {
@@ -2954,8 +2961,7 @@ namespace Quaver.Shared.Online.Workshop
         {
             var workshopRoot = GetWorkshopRootDir();
             var stagingDir = Path.Combine(workshopRoot, ".staging", item.PublishedFileId.ToString());
-            if (
-Directory.Exists(stagingDir))
+            if (Directory.Exists(stagingDir))
                 Directory.Delete(stagingDir, true);
             Directory.CreateDirectory(stagingDir);
 
@@ -3037,7 +3043,7 @@ Directory.Exists(stagingDir))
             var servers = allServers
                 .Where(s => (s.Type == "SteamCache" || s.Type == "CDN") &&
                             (s.AllowedAppIds == null || s.AllowedAppIds.Length == 0 || s.AllowedAppIds.Contains(QuaverAppId)))
-                .OrderByDescending(s => s.Protocol == Server.ConnectionProtocol.HTTPS)
+                .OrderByDescending(s => s.Protocol == CdnServer.ConnectionProtocol.HTTPS) 
                 .ThenBy(s => s.WeightedLoad)
                 .Take(6)
                 .ToList();
@@ -3216,7 +3222,7 @@ Directory.Exists(stagingDir))
             return keyCb.DepotKey;
         }
 
-        private async Task<string> RequestCdnAuthTokenAsync(Server server)
+        private async Task<string> RequestCdnAuthTokenAsync(CdnServer server)
         {
             var key = (QuaverWorkshopDepotId, server.Host);
             if (_cdnTokens.TryGetValue(key, out var existing))
@@ -4062,12 +4068,12 @@ namespace Quaver.Shared.Screens.Workshop
 """,
     encoding="utf-8",
 )
-
 (wui_dir / "SteamWorkshopScreen.cs").write_text(
     r"""#nullable disable
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Input;
 using Quaver.Server.Client.Enums;
+using Quaver.Server.Client.Objects;
 using Quaver.Shared.Config;
 using Quaver.Shared.Database.Maps;
 using Quaver.Shared.Modifiers;
@@ -4094,12 +4100,11 @@ namespace Quaver.Shared.Screens.Workshop
             (View as SteamWorkshopScreenView)?.InitializeLoad();
         }
 
-        public override void HandleInput(GameTime gameTime)
+        public override void Update(GameTime gameTime)
         {
-            if (Exiting)
-                return;
+            base.Update(gameTime);
 
-            if (KeyboardManager.IsUniqueKeyPress(Keys.Escape))
+            if (!Exiting && KeyboardManager.IsUniqueKeyPress(Keys.Escape))
                 ExitToMenu();
         }
 
@@ -4129,7 +4134,8 @@ namespace Quaver.Shared.Screens.Workshop
 }
 """,
     encoding="utf-8",
-)
+) 
+
 
 (wui_dir / "SteamWorkshopScreenView.cs").write_text(
     r"""#nullable disable
@@ -4177,13 +4183,14 @@ namespace Quaver.Shared.Screens.Workshop
         public WorkshopTouchScrollContainer(ScalableVector2 size, ScalableVector2 contentSize)
             : base(size, contentSize)
         {
+            InputEnabled = true;
             AllowScrollbarDragging = true;
             Scrollbar.Tint = ColorHelper.HexToColor("#60A5FA");
             Scrollbar.Width = 6;
             EasingType = Easing.OutQuint;
             TimeToCompleteScroll = 350;
             ScrollSpeed = 90;
-        }
+        } 
 
         public override void Update(GameTime gameTime)
         {
