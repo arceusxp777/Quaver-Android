@@ -1772,7 +1772,7 @@ if qg_cs.is_file():
             else:
                 qgt = qgt.replace(old_upd_end_plain, "            Window.AllowUserResizing = QuaverWindowManager.CanChangeResolutionOnScene;\n" + new_upd_end_tail, 1)
             qgt = qgt.replace(old_drw, new_drw, 1).replace(old_drw_end, new_drw_end, 1)
-            qg_cs.write_text(qgt, encoding="utf-8") 
+            qg_cs.write_text(qgt, encoding="utf-8")
             # 14) Dependencia NuGet SteamKit2 3.5.0 en Quaver.Shared.csproj (para Auth Steam + Workshop API/CDN sin libsteam_api.so)
 qs_csproj = root / "Quaver.Shared" / "Quaver.Shared.csproj"
 if qs_csproj.is_file():
@@ -5064,3 +5064,6 @@ namespace Quaver.Shared.Screens.Workshop
         }
     }
 } 
+""",
+    encoding="utf-8",
+) 
