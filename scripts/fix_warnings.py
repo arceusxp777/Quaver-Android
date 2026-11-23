@@ -4152,6 +4152,7 @@ using Quaver.Shared.Assets;
 using Quaver.Shared.Database.Maps;
 using Quaver.Shared.Graphics;
 using Quaver.Shared.Graphics.Backgrounds;
+using Quaver.Shared.Graphics.Dialogs;
 using Quaver.Shared.Graphics.Menu.Border;
 using Quaver.Shared.Graphics.Menu.Border.Components;
 using Quaver.Shared.Graphics.Notifications;
@@ -4163,6 +4164,7 @@ using Wobble.Graphics;
 using Wobble.Graphics.Animations;
 using Wobble.Graphics.Sprites;
 using Wobble.Graphics.Sprites.Text;
+using Wobble.Graphics.UI;
 using Wobble.Graphics.UI.Buttons;
 using Wobble.Graphics.UI.Dialogs;
 using Wobble.Input;
@@ -4170,7 +4172,7 @@ using Wobble.Managers;
 using Wobble.Platform;
 using Wobble.Screens;
 using Wobble.Window;
-
+using ColorHelper = Quaver.Shared.Helpers.ColorHelper; 
 namespace Quaver.Shared.Screens.Workshop
 {
     internal sealed class WorkshopTouchScrollContainer : ScrollContainer
