@@ -91,6 +91,15 @@ if cm.is_file():
     if old_ws in ct and 'GameDirectory.Value}/Workshop' not in ct:
         ct = ct.replace(old_ws, new_ws)
         cm_changed = True
+        old_gd = "_gameDirectory = Directory.GetCurrentDirectory();"
+    new_gd = (
+        "_gameDirectory = Directory.GetCurrentDirectory();\n"
+        '            if (global::System.OperatingSystem.IsAndroid() && (string.IsNullOrEmpty(_gameDirectory) || _gameDirectory == "/") && !string.IsNullOrEmpty(WobbleGame.WorkingDirectory))\n'
+        "                _gameDirectory = WobbleGame.WorkingDirectory.TrimEnd('/');"
+    )
+    if old_gd in ct and "WobbleGame.WorkingDirectory.TrimEnd" not in ct:
+        ct = ct.replace(old_gd, new_gd, 1)
+        cm_changed = True 
     if cm_changed:
         cm.write_text(ct, encoding="utf-8")
 
@@ -757,11 +766,15 @@ namespace QuaverAndroid
 
         private void StartQuaver(string workDir)
         {
-            Wobble.WobbleGame.WorkingDirectory = workDir;
+           Wobble.WobbleGame.WorkingDirectory = workDir;
+            System.IO.Directory.SetCurrentDirectory(workDir);
+            System.Environment.CurrentDirectory = workDir;
             AndroidDiagnostics.Trace("02.Batteries_V2.Init");
             SQLitePCL.Batteries_V2.Init();
             AndroidDiagnostics.Trace("03.ConfigManager.Initialize");
+            Wobble.Logging.Logger.Initialize();
             Quaver.Shared.Config.ConfigManager.Initialize();
+            Quaver.Shared.Config.StructuredConfigManager.Initialize();  
             System.Globalization.CultureInfo.DefaultThreadCurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
             System.Globalization.CultureInfo.DefaultThreadCurrentUICulture = System.Globalization.CultureInfo.InvariantCulture;
             System.Threading.Thread.CurrentThread.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
