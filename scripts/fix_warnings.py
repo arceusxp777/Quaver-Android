@@ -2063,6 +2063,56 @@ namespace Wobble.Platform
         public static float SafeInsetTop { get; set; }
         public static float SafeInsetRight { get; set; }
         public static float SafeInsetBottom { get; set; }
+        public static Microsoft.Xna.Framework.Input.Touch.TouchLocation[] CurrentTouchSnapshot { get; private set; }
+            = Array.Empty<Microsoft.Xna.Framework.Input.Touch.TouchLocation>();
+
+        public static Action OnAfterTouchSnapshotUpdated { get; set; }
+        public static bool SuppressMouseFromTouch { get; set; }
+        public static Func<Microsoft.Xna.Framework.Input.Keys[]> GetMenuNavVirtualKeysHandler { get; set; }
+        public static volatile bool IsNativeBackPressed;
+
+        public static Action<int, bool> OnNativeGamepadButton { get; set; }
+        public static Action<float, float, float, float, float, float> OnNativeGamepadAxes { get; set; }
+        public static Action<string, bool> OnNativeGamepadConnectionChanged { get; set; }
+        public static string ConnectedGamepadName { get; private set; } = string.Empty;
+
+        public static void UpdateTouchSnapshot(Microsoft.Xna.Framework.Input.Touch.TouchCollection touches)
+        {
+            if (touches.Count == 0)
+            {
+                if (CurrentTouchSnapshot.Length != 0)
+                    CurrentTouchSnapshot = Array.Empty<Microsoft.Xna.Framework.Input.Touch.TouchLocation>();
+            }
+            else
+            {
+                var arr = new Microsoft.Xna.Framework.Input.Touch.TouchLocation[touches.Count];
+                for (var i = 0; i < touches.Count; i++)
+                    arr[i] = touches[i];
+                CurrentTouchSnapshot = arr;
+            }
+            try { OnAfterTouchSnapshotUpdated?.Invoke(); } catch { }
+        }
+
+        public static void NotifyNativeGamepadButton(int keyCode, bool isDown)
+        {
+            try { OnNativeGamepadButton?.Invoke(keyCode, isDown); } catch { }
+        }
+
+        public static void NotifyNativeGamepadAxes(float lx, float ly, float hx, float hy, float lt, float rt)
+        {
+            try { OnNativeGamepadAxes?.Invoke(lx, ly, hx, hy, lt, rt); } catch { }
+        }
+
+        public static void NotifyGamepadConnection(string name, bool connected)
+        {
+            ConnectedGamepadName = connected ? (name ?? "Gamepad") : string.Empty;
+            try { OnNativeGamepadConnectionChanged?.Invoke(name ?? "Gamepad", connected); } catch { }
+        }
+
+        public static void Vibrate(int durationMs, int amplitude)
+        {
+            try { VibrateHandler?.Invoke(durationMs, Math.Clamp(amplitude, 1, 255)); } catch { }
+        }
         public static Action<string> OpenUrlHandler { get; set; }
         public static Action<string, string, bool, Action<string>> PromptTextHandler { get; set; }
         public static Action<string> CopyTextHandler { get; set; }
@@ -2514,7 +2564,10 @@ namespace Quaver.Shared.Online.Workshop
         private PublishedFile _publishedFile;
 
         private Thread _callbackThread;
-        private volatile bool _pumpRunning;
+        private CancellationTokenSource _pumpCts;
+        private long _clientEpoch;
+        private string _lastDebugLog = string.Empty;
+        private SteamConfiguration _steamConfig; 
         private TaskCompletionSource<bool> _connectedTcs;
         private TaskCompletionSource<SteamUser.LoggedOnCallback> _loggedOnTcs;
         private bool _freeLicenseRequested;
@@ -5527,3 +5580,610 @@ namespace Quaver.Shared.Screens.Workshop
 """,
     encoding="utf-8",
 ) 
+# 20) ImGui seguro en Android (ImGuiSupport + SpriteImGui + EditScreenView con barra tactil Guardar/Probar/Salir)
+imgui_support_cs = root / "Wobble" / "Wobble" / "Graphics" / "ImGUI" / "ImGuiSupport.cs"
+if imgui_support_cs.parent.is_dir():
+    imgui_support_cs.write_text(
+        """using System;
+using System.Runtime.InteropServices;
+
+namespace Wobble.Graphics.ImGUI
+{
+    public static class ImGuiSupport
+    {
+        private static int _state; // 0 = unchecked, 1 = available, -1 = unavailable
+
+        public static bool IsAvailable
+        {
+            get
+            {
+                if (_state != 0)
+                    return _state == 1;
+
+                try
+                {
+                    if (OperatingSystem.IsAndroid())
+                    {
+                        if (NativeLibrary.TryLoad("libcimgui.so", out var h1) || NativeLibrary.TryLoad("cimgui", out h1))
+                        {
+                            _state = 1;
+                            return true;
+                        }
+                        _state = -1;
+                        return false;
+                    }
+                    _state = 1;
+                    return true;
+                }
+                catch
+                {
+                    _state = -1;
+                    return false;
+                }
+            }
+        }
+    }
+}
+""",
+        encoding="utf-8",
+    )
+
+sprite_imgui_cs = root / "Wobble" / "Wobble" / "Graphics" / "ImGUI" / "SpriteImGui.cs"
+if sprite_imgui_cs.is_file():
+    sit = sprite_imgui_cs.read_text(encoding="utf-8-sig")
+    if "ImGuiSupport.IsAvailable" not in sit:
+        sit = sit.replace(
+            "        public bool WasActivatedByMouse => Renderer.WasActivatedByMouse;",
+            "        public bool WasActivatedByMouse => Renderer != null && Renderer.WasActivatedByMouse;",
+            1,
+        ).replace(
+            "        public bool IsMouseHovered => Renderer.IsMouseHovered;",
+            "        public bool IsMouseHovered => Renderer != null && Renderer.IsMouseHovered;",
+            1,
+        ).replace(
+            "        public bool IsMouseInputOwner => Renderer.IsMouseInputOwner;",
+            "        public bool IsMouseInputOwner => Renderer != null && Renderer.IsMouseInputOwner;",
+            1,
+        ).replace(
+            "        public bool IsKeyboardInputOwner => Renderer.IsKeyboardInputOwner;",
+            "        public bool IsKeyboardInputOwner => Renderer != null && Renderer.IsKeyboardInputOwner;",
+            1,
+        ).replace(
+            "        public bool WantsMouseInput => Renderer.WantsMouseInput;",
+            "        public bool WantsMouseInput => Renderer != null && Renderer.WantsMouseInput;",
+            1,
+        ).replace(
+            "        public bool WantsKeyboardInput => Renderer.WantsKeyboardInput;",
+            "        public bool WantsKeyboardInput => Renderer != null && Renderer.WantsKeyboardInput;",
+            1,
+        ).replace(
+            "        public bool WantsTextInput => Renderer.WantsTextInput;",
+            "        public bool WantsTextInput => Renderer != null && Renderer.WantsTextInput;",
+            1,
+        ).replace(
+            "            Options = options;\n\n            if (Thread.CurrentThread.ManagedThreadId == GameBase.Game.MainThreadId)",
+            "            Options = options;\n            if (!ImGuiSupport.IsAvailable)\n                return;\n\n            if (Thread.CurrentThread.ManagedThreadId == GameBase.Game.MainThreadId)",
+            1,
+        ).replace(
+            "        public virtual void Draw(GameTime gameTime)\n        {\n            if (ImGui.GetCurrentContext() != Renderer.Context)",
+            "        public virtual void Draw(GameTime gameTime)\n        {\n            if (Renderer == null)\n                return;\n\n            if (ImGui.GetCurrentContext() != Renderer.Context)",
+            1,
+        ).replace(
+            "        public virtual void Destroy() => Renderer.Dispose();",
+            "        public virtual void Destroy() => Renderer?.Dispose();",
+            1,
+        )
+        sprite_imgui_cs.write_text(sit, encoding="utf-8")
+
+esv_cs = root / "Quaver.Shared" / "Screens" / "Edit" / "EditScreenView.cs"
+if esv_cs.is_file():
+    esvt = esv_cs.read_text(encoding="utf-8-sig")
+    if "CreateAndroidEditorBar" not in esvt:
+        esvt = esvt.replace(
+            "using Wobble.Window;",
+            "using Wobble.Window;\nusing Wobble.Graphics.Sprites.Text;\nusing Wobble.Managers;\nusing Quaver.Shared.Graphics.Notifications;",
+            1,
+        )
+        esvt = esvt.replace(
+            "            Footer.Parent = Container;",
+            "            Footer.Parent = Container;\n\n            if (!ImGuiSupport.IsAvailable)\n                CreateAndroidEditorBar();",
+            1,
+        )
+        old_esv_draw = """            if (MenuBar != null && !EditScreen.Exiting)
+            {
+                if (DialogManager.Dialogs.Count == 0)
+                    DrawPlugins(gameTime);
+
+                MenuBar?.Draw(gameTime);
+                GameBase.Game.TryEndBatch();
+
+                if (ImGui.IsAnyItemHovered() || ImGui.IsAnyItemActive() || ImGui.IsAnyItemFocused())
+                {
+                    IsImGuiMouseCaptured = true;
+                    IsImGuiKeyboardCaptured = true;
+                }
+            }"""
+        new_esv_draw = """            if (ImGuiSupport.IsAvailable && MenuBar != null && !EditScreen.Exiting)
+            {
+                if (DialogManager.Dialogs.Count == 0)
+                    DrawPlugins(gameTime);
+
+                MenuBar?.Draw(gameTime);
+                GameBase.Game.TryEndBatch();
+
+                if (ImGui.IsAnyItemHovered() || ImGui.IsAnyItemActive() || ImGui.IsAnyItemFocused())
+                {
+                    IsImGuiMouseCaptured = true;
+                    IsImGuiKeyboardCaptured = true;
+                }
+            }"""
+        esvt = esvt.replace(old_esv_draw, new_esv_draw, 1)
+        old_dp = "                if (ImGui.IsAnyItemHovered() || plugin.IsWindowHovered)"
+        new_dp = "                if ((ImGuiSupport.IsAvailable && ImGui.IsAnyItemHovered()) || plugin.IsWindowHovered)"
+        esvt = esvt.replace(old_dp, new_dp, 1)
+        esvt = esvt.replace(
+            "        private void CreateBackground()",
+            """        private void CreateAndroidEditorBar()
+        {
+            var topY = 12f + Math.Max(0, WindowManager.Height * global::Wobble.Platform.AndroidPlatformBridge.SafeInsetTop);
+            var bar = new Sprite
+            {
+                Parent = Container,
+                Alignment = Alignment.TopCenter,
+                Y = topY,
+                Size = new ScalableVector2(540, 50),
+                Tint = new Color(18, 22, 34, 220)
+            };
+            bar.AddBorder(new Color(69, 214, 245), 2);
+
+            void AddBarButton(string label, float x, Color fill, EventHandler onClick)
+            {
+                var btn = new ImageButton(UserInterface.BlankBox, onClick)
+                {
+                    Parent = bar,
+                    Alignment = Alignment.MidLeft,
+                    X = x,
+                    Size = new ScalableVector2(166, 38),
+                    Tint = fill
+                };
+                btn.AddBorder(new Color(90, 110, 145), 1);
+                var txt = new SpriteTextPlus(FontManager.GetWobbleFont(Fonts.InterSemiBold), label, 16)
+                {
+                    Parent = btn,
+                    Alignment = Alignment.MidCenter,
+                    Tint = Color.White
+                };
+            }
+
+            AddBarButton("GUARDAR", 10, new Color(36, 130, 82), (s, e) =>
+            {
+                try
+                {
+                    EditScreen.Save(true);
+                    NotificationManager.Show(NotificationLevel.Success, "Mapa guardado");
+                }
+                catch (Exception ex)
+                {
+                    NotificationManager.Show(NotificationLevel.Error, "Error al guardar: " + ex.Message);
+                }
+            });
+
+            AddBarButton("PROBAR", 187, new Color(36, 104, 168), (s, e) =>
+            {
+                try { EditScreen.ExitToTestPlay(false); } catch { }
+            });
+
+            AddBarButton("SALIR", 364, new Color(156, 48, 56), (s, e) =>
+            {
+                try { EditScreen.LeaveEditor(); } catch { }
+            });
+        }
+
+        private void CreateBackground()""",
+            1,
+        )
+        esv_cs.write_text(esvt, encoding="utf-8")
+
+# 21) Wobble MouseManager (snapshot unico TouchPanel + drag scroll + suppress en gameplay) y KeyboardManager (menu nav virtual keys)
+mm_cs = root / "Wobble" / "Wobble" / "Input" / "MouseManager.cs"
+if mm_cs.is_file():
+    mmt = mm_cs.read_text(encoding="utf-8-sig")
+    if "UpdateTouchSnapshot" not in mmt:
+        if "using Wobble.Platform;" not in mmt:
+            mmt = mmt.replace(
+                "using Microsoft.Xna.Framework.Input;",
+                "using Microsoft.Xna.Framework.Input;\nusing Wobble.Platform;\nusing Wobble.Window;",
+                1,
+            )
+        if "using Microsoft.Xna.Framework.Input.Touch;" not in mmt:
+            mmt = mmt.replace(
+                "using Microsoft.Xna.Framework.Input;",
+                "using Microsoft.Xna.Framework.Input;\nusing Microsoft.Xna.Framework.Input.Touch;",
+                1,
+            )
+        old_priv_mm = "        private static EnhancedMouseState SyntheticState { get; set; }"
+        new_priv_mm = """        private static EnhancedMouseState SyntheticState { get; set; }
+        private static int _touchScrollAccum;
+        private static int _activeScrollTouchId = -1;
+        private static float _lastScrollTouchY;
+        private static bool _isDragScrolling;
+        private static int _dragStartTouchId = -1;
+        private static Vector2 _dragStartPos;"""
+        mmt = mmt.replace(old_priv_mm, new_priv_mm, 1)
+
+        mmt = re.sub(
+            r"        internal static void Update\(\).*?(?=\n        /// <summary>\s*\n\s*///\s*Enables deterministic input)",
+            """        internal static void Update()
+        {
+            PreviousState = CurrentState;
+            if (IsSyntheticInputEnabled)
+            {
+                CurrentState = SyntheticState;
+                return;
+            }
+
+            if (global::System.OperatingSystem.IsAndroid())
+            {
+                var touches = TouchPanel.GetState();
+                AndroidPlatformBridge.UpdateTouchSnapshot(touches);
+
+                if (AndroidPlatformBridge.SuppressMouseFromTouch)
+                {
+                    _touchWasDown = false;
+                    _activeScrollTouchId = -1;
+                    _dragStartTouchId = -1;
+                    _isDragScrolling = false;
+                    CurrentState = new EnhancedMouseState(
+                        PreviousState.Position,
+                        _touchScrollAccum,
+                        ButtonState.Released,
+                        ButtonState.Released,
+                        ButtonState.Released,
+                        ButtonState.Released,
+                        ButtonState.Released
+                    );
+                    return;
+                }
+
+                TouchLocation? primary = null;
+                for (var i = 0; i < touches.Count; i++)
+                {
+                    if (touches[i].State != TouchLocationState.Invalid)
+                    {
+                        primary = touches[i];
+                        break;
+                    }
+                }
+
+                if (primary.HasValue)
+                {
+                    var t = primary.Value;
+                    var px = t.Position.X;
+                    var py = t.Position.Y;
+                    var gd = GameBase.Game?.GraphicsDevice;
+                    if (gd != null && TouchPanel.DisplayWidth > 0 && TouchPanel.DisplayHeight > 0)
+                    {
+                        px = px * gd.PresentationParameters.BackBufferWidth / TouchPanel.DisplayWidth;
+                        py = py * gd.PresentationParameters.BackBufferHeight / TouchPanel.DisplayHeight;
+                    }
+                    var scale = WindowManager.ScreenScale;
+                    var sx = scale.X > 0.001f ? scale.X : 1f;
+                    var sy = scale.Y > 0.001f ? scale.Y : 1f;
+                    var pos = new Vector2(px / sx, py / sy);
+
+                    if (t.State == TouchLocationState.Pressed || _dragStartTouchId != t.Id)
+                    {
+                        _dragStartTouchId = t.Id;
+                        _dragStartPos = pos;
+                        _isDragScrolling = false;
+                        _activeScrollTouchId = t.Id;
+                        _lastScrollTouchY = pos.Y;
+                    }
+                    else if (t.State == TouchLocationState.Moved)
+                    {
+                        var dyFromStart = pos.Y - _dragStartPos.Y;
+                        if (!_isDragScrolling && Math.Abs(dyFromStart) > 22f)
+                            _isDragScrolling = true;
+
+                        if (_isDragScrolling && _activeScrollTouchId == t.Id)
+                        {
+                            var dy = pos.Y - _lastScrollTouchY;
+                            _lastScrollTouchY = pos.Y;
+                            var step = (int)Math.Round(dy * 2.2f);
+                            if (step != 0)
+                                _touchScrollAccum += step;
+                        }
+                    }
+
+                    var isDown = t.State != TouchLocationState.Released && !_isDragScrolling;
+                    _touchWasDown = isDown;
+                    _lastTouchPoint = new Point((int)px, (int)py);
+                    CurrentState = new EnhancedMouseState(
+                        pos,
+                        _touchScrollAccum,
+                        isDown ? ButtonState.Pressed : ButtonState.Released,
+                        ButtonState.Released,
+                        ButtonState.Released,
+                        ButtonState.Released,
+                        ButtonState.Released
+                    );
+                    if (t.State == TouchLocationState.Released)
+                    {
+                        _activeScrollTouchId = -1;
+                        _dragStartTouchId = -1;
+                        _isDragScrolling = false;
+                    }
+                    return;
+                }
+
+                _touchWasDown = false;
+                _activeScrollTouchId = -1;
+                _dragStartTouchId = -1;
+                _isDragScrolling = false;
+                var msNoTouch = Mouse.GetState();
+                CurrentState = new EnhancedMouseState(
+                    PreviousState.Position,
+                    _touchScrollAccum + msNoTouch.ScrollWheelValue,
+                    msNoTouch.LeftButton,
+                    msNoTouch.RightButton,
+                    msNoTouch.MiddleButton,
+                    msNoTouch.XButton1,
+                    msNoTouch.XButton2
+                );
+                return;
+            }
+
+            CurrentState = new EnhancedMouseState(Mouse.GetState());
+        }""",
+            mmt,
+            count=1,
+            flags=re.S,
+        )
+        mm_cs.write_text(mmt, encoding="utf-8")
+
+km_cs = root / "Wobble" / "Wobble" / "Input" / "KeyboardManager.cs"
+if km_cs.is_file():
+    kmt = km_cs.read_text(encoding="utf-8-sig")
+    if "GetMenuNavVirtualKeysHandler" not in kmt:
+        kmt = kmt.replace(
+            "using Wobble.Bindables;",
+            "using Wobble.Bindables;\nusing Wobble.Platform;",
+            1,
+        )
+        old_km_upd = """        internal static void Update()
+        {
+            PreviousState = CurrentState;
+            CurrentState = Keyboard.GetState();
+        }"""
+        new_km_upd = """        internal static void Update()
+        {
+            PreviousState = CurrentState;
+            var ks = Keyboard.GetState();
+            if (OperatingSystem.IsAndroid())
+            {
+                var extra = AndroidPlatformBridge.GetMenuNavVirtualKeysHandler?.Invoke();
+                var hasExtra = extra != null && extra.Length > 0;
+                if (hasExtra || AndroidPlatformBridge.IsNativeBackPressed)
+                {
+                    var list = new List<Keys>(ks.GetPressedKeys());
+                    if (AndroidPlatformBridge.IsNativeBackPressed && !list.Contains(Keys.Escape))
+                        list.Add(Keys.Escape);
+                    if (hasExtra)
+                    {
+                        foreach (var k in extra)
+                        {
+                            if (k != Keys.None && !list.Contains(k))
+                                list.Add(k);
+                        }
+                    }
+                    CurrentState = new KeyboardState(list.ToArray());
+                    return;
+                }
+            }
+            CurrentState = ks;
+        }"""
+        kmt = kmt.replace(old_km_upd, new_km_upd, 1)
+        km_cs.write_text(kmt, encoding="utf-8")
+
+# 24) Menu de Opciones "Android Controls" (Tactil + Remapeo Mando + Deadzone + Vibracion)
+opt_custom_dir = root / "Quaver.Shared" / "Screens" / "Options" / "Items" / "Custom"
+(opt_custom_dir / "OptionsItemGamepadBind.cs").write_text(
+    """using Microsoft.Xna.Framework;
+using MonoGame.Extended;
+using Quaver.Shared.Assets;
+using Quaver.Shared.Graphics;
+using Quaver.Shared.Input.Android;
+using Wobble.Graphics;
+using Wobble.Graphics.Sprites.Text;
+using Wobble.Graphics.UI.Buttons;
+using Wobble.Managers;
+using ColorHelper = Quaver.Shared.Helpers.ColorHelper;
+
+namespace Quaver.Shared.Screens.Options.Items.Custom
+{
+    public class OptionsItemGamepadBind : OptionsItem
+    {
+        private readonly int _keyCount;
+        private readonly int _lane;
+        private readonly ImageButton _button;
+        private readonly SpriteTextPlus _text;
+
+        public OptionsItemGamepadBind(RectangleF containerRect, string name, int keyCount, int lane)
+            : base(containerRect, name)
+        {
+            _keyCount = keyCount;
+            _lane = lane;
+
+            _button = new ImageButton(UserInterface.DropdownClosed)
+            {
+                Parent = this,
+                Alignment = Alignment.MidRight,
+                X = -Name.X,
+                Size = new ScalableVector2(250, 35),
+                Tint = ColorHelper.HexToColor("#181818"),
+                UsePreviousSpriteBatchOptions = true
+            };
+
+            _text = new SpriteTextPlus(FontManager.GetWobbleFont(Fonts.InterSemiBold), "", 18)
+            {
+                Parent = _button,
+                Alignment = Alignment.MidCenter,
+                Tint = Colors.MainAccent,
+                UsePreviousSpriteBatchOptions = true
+            };
+
+            RefreshText();
+
+            _button.Clicked += (s, e) =>
+            {
+                Focused = true;
+                _text.Text = "PRESS BUTTON...";
+                _text.Tint = Color.Yellow;
+                AndroidControlsManager.Instance.BeginButtonCapture(btn =>
+                {
+                    AndroidControlsManager.Instance.SetGamepadBindingForLane(_keyCount, _lane, btn);
+                    Focused = false;
+                    RefreshText();
+                });
+            };
+
+            _button.ClickedOutside += (s, e) =>
+            {
+                if (Focused)
+                {
+                    AndroidControlsManager.Instance.CancelButtonCapture();
+                    Focused = false;
+                    RefreshText();
+                }
+            };
+        }
+
+        public void RefreshText()
+        {
+            var bound = AndroidControlsManager.Instance.GetGamepadBindingForLane(_keyCount, _lane);
+            _text.Text = AndroidControlsManager.FormatButtonLabel(bound);
+            _text.Tint = Colors.MainAccent;
+        }
+    }
+}
+""",
+    encoding="utf-8",
+)
+
+(opt_custom_dir / "OptionsItemActionButton.cs").write_text(
+    """using System;
+using Microsoft.Xna.Framework;
+using MonoGame.Extended;
+using Quaver.Shared.Assets;
+using Wobble.Graphics;
+using Wobble.Graphics.Sprites.Text;
+using Wobble.Graphics.UI.Buttons;
+using Wobble.Managers;
+using ColorHelper = Quaver.Shared.Helpers.ColorHelper;
+
+namespace Quaver.Shared.Screens.Options.Items.Custom
+{
+    public class OptionsItemActionButton : OptionsItem
+    {
+        public OptionsItemActionButton(RectangleF containerRect, string name, string buttonLabel, Action onClick)
+            : base(containerRect, name)
+        {
+            var btn = new ImageButton(UserInterface.BlankBox, (s, e) => onClick?.Invoke())
+            {
+                Parent = this,
+                Alignment = Alignment.MidRight,
+                X = -Name.X,
+                Size = new ScalableVector2(250, 36),
+                Tint = ColorHelper.HexToColor("#1A5D8A"),
+                UsePreviousSpriteBatchOptions = true
+            };
+            btn.AddBorder(ColorHelper.HexToColor("#45D6F5"), 1);
+
+            var lbl = new SpriteTextPlus(FontManager.GetWobbleFont(Fonts.InterSemiBold), buttonLabel, 17)
+            {
+                Parent = btn,
+                Alignment = Alignment.MidCenter,
+                Tint = Color.White,
+                UsePreviousSpriteBatchOptions = true
+            };
+        }
+    }
+}
+""",
+    encoding="utf-8",
+)
+
+om_cs = root / "Quaver.Shared" / "Screens" / "Options" / "OptionsMenu.cs"
+if om_cs.is_file():
+    omt = om_cs.read_text(encoding="utf-8-sig")
+    if "Android Controls" not in omt:
+        omt = omt.replace(
+            "using Quaver.Shared.Input.Global;",
+            "using Quaver.Shared.Input.Global;\nusing Quaver.Shared.Input.Android;\nusing Quaver.Shared.Graphics.Notifications;\nusing Quaver.Shared.Graphics.Form.Dropdowns;",
+            1,
+        )
+        old_om_end = """            SelectedSection = new Bindable<OptionsSection>(Sections.First()) { Value = Sections.First() };
+        }"""
+        new_om_end = """            var ctrl = AndroidControlsManager.Instance;
+            ctrl.Initialize();
+
+            var bind4Items = new List<OptionsItem>();
+            for (var li = 0; li < 4; li++)
+                bind4Items.Add(new OptionsItemGamepadBind(containerRect, $"4K Lane {li + 1} Gamepad Button", 4, li));
+
+            var presetDd = new Dropdown(
+                new List<string>(ctrl.GetGamepad4KPresetNames()),
+                new ScalableVector2(250, 35),
+                17,
+                selectedIndex: ctrl.GetCurrent4KPresetIndex()
+            );
+            presetDd.ItemSelected += (s, e) =>
+            {
+                ctrl.Apply4KPreset(e.Index);
+                foreach (var item in bind4Items)
+                {
+                    if (item is OptionsItemGamepadBind gb)
+                        gb.RefreshText();
+                }
+            };
+
+            var gamepadItems = new List<OptionsItem>
+            {
+                new OptionsItemCheckbox(containerRect, "Enable Gamepad Input", ctrl.GamepadEnabledBindable),
+                new OptionsItemDropdown(containerRect, "4K Gamepad Preset", presetDd),
+            };
+            gamepadItems.AddRange(bind4Items);
+            gamepadItems.Add(new OptionsSlider(containerRect, "Gamepad Stick Deadzone", ctrl.GamepadDeadzoneBindable, v => $"{v}%"));
+            gamepadItems.Add(new OptionsItemCheckbox(containerRect, "Gamepad Hit Vibration", ctrl.GamepadVibrationEnabledBindable));
+            gamepadItems.Add(new OptionsSlider(containerRect, "Vibration Intensity", ctrl.GamepadVibrationIntensityBindable, v => $"{v}%"));
+            gamepadItems.Add(new OptionsItemActionButton(containerRect, "Reset Touch & Gamepad Controls", "RESET DEFAULTS", () =>
+            {
+                ctrl.ResetAllToDefaults();
+                foreach (var item in bind4Items)
+                {
+                    if (item is OptionsItemGamepadBind gb)
+                        gb.RefreshText();
+                }
+                NotificationManager.Show(NotificationLevel.Success, "Controles Android restablecidos");
+            }));
+
+            Sections.Add(new OptionsSection("Android Controls", UserInterface.OptionsInput, new List<OptionsSubcategory>
+            {
+                new OptionsSubcategory("Touchscreen Gameplay", new List<OptionsItem>
+                {
+                    new OptionsItemCheckbox(containerRect, "Enable Touch Controls", ctrl.TouchEnabledBindable),
+                    new OptionsSlider(containerRect, "Touch Zone Height", ctrl.TouchHeightPercentBindable, v => $"{v}%"),
+                    new OptionsSlider(containerRect, "Touch Bottom Margin", ctrl.TouchMarginBottomBindable, v => $"{v} px"),
+                    new OptionsSlider(containerRect, "Touch Lane Spacing", ctrl.TouchSpacingBindable, v => $"{v} px"),
+                    new OptionsSlider(containerRect, "Touch Overlay Opacity", ctrl.TouchOpacityPercentBindable, v => $"{v}%"),
+                    new OptionsItemCheckbox(containerRect, "Touch Edge Guard (Safe Margins)", ctrl.TouchEdgeGuardBindable),
+                    new OptionsItemCheckbox(containerRect, "Show Touch Lane Labels", ctrl.TouchShowLabelsBindable),
+                    new OptionsItemCheckbox(containerRect, "Touch Hit Vibration", ctrl.TouchVibrationEnabledBindable),
+                }),
+                new OptionsSubcategory("Gamepad (Bluetooth / USB HID)", gamepadItems)
+            }));
+
+            SelectedSection = new Bindable<OptionsSection>(Sections.First()) { Value = Sections.First() };
+        }"""
+        omt = omt.replace(old_om_end, new_om_end, 1)
+        om_cs.write_text(omt, encoding="utf-8")
