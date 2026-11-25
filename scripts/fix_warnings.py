@@ -388,7 +388,7 @@ if qg.is_file():
     if old_fu in qt and "QuaverGame.FirstUpdate start" not in qt:
         qt = qt.replace(old_fu, new_fu)
         q_changed = True
-        old_bl = "            ConfigManager.WindowBorderless.ValueChanged += (sender, e) => Window.IsBorderless = e.Value;"
+    old_bl = "            ConfigManager.WindowBorderless.ValueChanged += (sender, e) => Window.IsBorderless = e.Value;"
     new_bl = (
         "            ConfigManager.WindowBorderless.ValueChanged += (sender, e) =>\n"
         "            {\n"
