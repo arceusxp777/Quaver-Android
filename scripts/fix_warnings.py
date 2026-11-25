@@ -91,7 +91,7 @@ if cm.is_file():
     if old_ws in ct and 'GameDirectory.Value}/Workshop' not in ct:
         ct = ct.replace(old_ws, new_ws)
         cm_changed = True
-        old_gd = "_gameDirectory = Directory.GetCurrentDirectory();"
+    old_gd = "_gameDirectory = Directory.GetCurrentDirectory();"
     new_gd = (
         "_gameDirectory = Directory.GetCurrentDirectory();\n"
         '            if (global::System.OperatingSystem.IsAndroid() && (string.IsNullOrEmpty(_gameDirectory) || _gameDirectory == "/") && !string.IsNullOrEmpty(WobbleGame.WorkingDirectory))\n'
@@ -120,6 +120,68 @@ if scm.is_file():
             "        LastWrite = GameBase.Game?.TimeRunning ?? -1;\n        return Task.CompletedTask;\n    }",
         )
         scm.write_text(st, encoding="utf-8")
+        # 3b) TextureManager: thread-safe Load y LoadAtlas (evita ArgumentException al cargar menu y select en paralelo)
+tm_cs = root / "Wobble" / "Wobble" / "Managers" / "TextureManager.cs"
+if tm_cs.is_file():
+    tmt = tm_cs.read_text(encoding="utf-8-sig")
+    if "LoadLock" not in tmt:
+        tmt = tmt.replace(
+            "        public static Dictionary<string, Texture2D> Textures { get; } = new Dictionary<string, Texture2D>();",
+            "        private static readonly object LoadLock = new object();\n\n        public static Dictionary<string, Texture2D> Textures { get; } = new Dictionary<string, Texture2D>();",
+            1,
+        )
+        old_load = (
+            "        public static Texture2D Load(string name)\n"
+            "        {\n"
+            "            if (Textures.ContainsKey(name))\n"
+            "                return Textures[name];\n\n"
+            "            var tex = AssetLoader.LoadTexture2D(GameBase.Game.Resources.Get(name));\n"
+            "            Textures.Add(name, tex);\n\n"
+            "            return tex;\n"
+            "        }"
+        )
+        new_load = (
+            "        public static Texture2D Load(string name)\n"
+            "        {\n"
+            "            lock (LoadLock)\n"
+            "            {\n"
+            "                if (Textures.TryGetValue(name, out var existing))\n"
+            "                    return existing;\n\n"
+            "                var tex = AssetLoader.LoadTexture2D(GameBase.Game.Resources.Get(name));\n"
+            "                Textures[name] = tex;\n"
+            "                return tex;\n"
+            "            }\n"
+            "        }"
+        )
+        old_atlas = (
+            "        public static List<Texture2D> LoadAtlas(string name, int rows, int columns)\n"
+            "        {\n"
+            "            if (TextureAtlases.ContainsKey(name))\n"
+            "                return TextureAtlases[name];\n\n"
+            "            var tex = AssetLoader.LoadTexture2D(GameBase.Game.Resources.Get(name));\n"
+            "            var textures = AssetLoader.LoadSpritesheetFromTexture(tex, rows, columns);\n"
+            "            tex.Dispose();\n\n"
+            "            TextureAtlases.Add(name, textures);\n\n"
+            "            return textures;\n"
+            "        }"
+        )
+        new_atlas = (
+            "        public static List<Texture2D> LoadAtlas(string name, int rows, int columns)\n"
+            "        {\n"
+            "            lock (LoadLock)\n"
+            "            {\n"
+            "                if (TextureAtlases.TryGetValue(name, out var existing))\n"
+            "                    return existing;\n\n"
+            "                var tex = AssetLoader.LoadTexture2D(GameBase.Game.Resources.Get(name));\n"
+            "                var textures = AssetLoader.LoadSpritesheetFromTexture(tex, rows, columns);\n"
+            "                tex.Dispose();\n\n"
+            "                TextureAtlases[name] = textures;\n"
+            "                return textures;\n"
+            "            }\n"
+            "        }"
+        )
+        tmt = tmt.replace(old_load, new_load, 1).replace(old_atlas, new_atlas, 1)
+        tm_cs.write_text(tmt, encoding="utf-8") 
 
 # 4) WobbleGame: MainThreadId en hilo GL, evitar ImGui/cimgui en Android Debug, y trazas Initialize/LoadContent
 wg = root / "Wobble" / "Wobble" / "WobbleGame.cs"
@@ -326,6 +388,26 @@ if qg.is_file():
     if old_fu in qt and "QuaverGame.FirstUpdate start" not in qt:
         qt = qt.replace(old_fu, new_fu)
         q_changed = True
+        old_bl = "            ConfigManager.WindowBorderless.ValueChanged += (sender, e) => Window.IsBorderless = e.Value;"
+    new_bl = (
+        "            ConfigManager.WindowBorderless.ValueChanged += (sender, e) =>\n"
+        "            {\n"
+        "                if (!global::System.OperatingSystem.IsAndroid())\n"
+        "                    Window.IsBorderless = e.Value;\n"
+        "            };"
+    )
+    if old_bl in qt:
+        qt = qt.replace(old_bl, new_bl, 1)
+        q_changed = True
+
+    old_bl0 = "            Window.IsBorderless = ConfigManager.WindowBorderless.Value;"
+    new_bl0 = (
+        "            if (!global::System.OperatingSystem.IsAndroid())\n"
+        "                Window.IsBorderless = ConfigManager.WindowBorderless.Value;"
+    )
+    if old_bl0 in qt:
+        qt = qt.replace(old_bl0, new_bl0, 1)
+        q_changed = True 
 
     if q_changed:
         qg.write_text(qt, encoding="utf-8")
@@ -538,6 +620,8 @@ using System.Threading.Tasks;
 using Android.App;
 using Android.Content;
 using Android.Content.PM;
+using System.Collections.Generic;
+using Android.Hardware.Input; 
 using Android.OS;
 using Android.Views;
 using Android.Widget;
@@ -550,7 +634,7 @@ namespace QuaverAndroid
     [Activity(Label = "Quaver", Icon = "@drawable/icon", MainLauncher = true, LaunchMode = LaunchMode.SingleInstance,
         ScreenOrientation = ScreenOrientation.SensorLandscape,
         ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.Keyboard | ConfigChanges.KeyboardHidden | ConfigChanges.ScreenSize)]
-    public class MainActivity : AndroidGameActivity
+    public class MainActivity : AndroidGameActivity, global::Android.Hardware.Input.InputManager.IInputDeviceListener
     {
         private string _crashFile;
         private Quaver.Shared.QuaverGame _game;
@@ -560,6 +644,8 @@ namespace QuaverAndroid
         private Handler _handler;
         private volatile bool _reportShown;
         private Vibrator _vibrator;
+        private global::Android.Hardware.Input.InputManager _androidInputManager;
+        private readonly Dictionary<int, string> _connectedGamepads = new Dictionary<int, string>(); 
 
         protected override void OnCreate(Bundle bundle)
         {
@@ -604,7 +690,7 @@ namespace QuaverAndroid
                 ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent,
                 GravityFlags.Top | GravityFlags.Left));
 
-            var logsBtn = new Button(this) { Text = "LOGS" };
+            var logsBtn = new Button(this) { Text = "LOGS", Focusable = false, FocusableInTouchMode = false }; 
             logsBtn.SetBackgroundColor(global::Android.Graphics.Color.Argb(210, 180, 30, 30));
             logsBtn.SetTextColor(global::Android.Graphics.Color.White);
             logsBtn.Click += (s, e) => ShowReport(BuildLogText());
@@ -615,6 +701,7 @@ namespace QuaverAndroid
             SetContentView(_rootFrame);
             UpdateSafeAreaInsets();
             _handler = new Handler(Looper.MainLooper);
+            InitAndroidGamepadListener(); 
             ScheduleTracePoll();
             AndroidDiagnostics.Trace("01.OnCreate dataDir=" + dataDir);
 
@@ -898,6 +985,96 @@ namespace QuaverAndroid
             }
         }
 
+        private void InitAndroidGamepadListener()
+        {
+            try
+            {
+                _androidInputManager = GetSystemService(InputService) as global::Android.Hardware.Input.InputManager;
+                if (_androidInputManager == null)
+                    return;
+
+                _androidInputManager.RegisterInputDeviceListener(this, _handler);
+                var ids = _androidInputManager.GetInputDeviceIds();
+                if (ids != null)
+                {
+                    foreach (var id in ids)
+                    {
+                        var dev = InputDevice.GetDevice(id);
+                        if (IsGamepadDevice(dev))
+                        {
+                            var name = string.IsNullOrWhiteSpace(dev.Name) ? $"Mando #{id}" : dev.Name;
+                            _connectedGamepads[id] = name;
+                            AndroidPlatformBridge.NotifyGamepadConnection(name, true);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AndroidDiagnostics.Trace("InitAndroidGamepadListener ERR: " + ex.Message);
+            }
+        }
+
+        private static bool IsGamepadDevice(InputDevice dev)
+        {
+            if (dev == null || dev.IsVirtual)
+                return false;
+            var src = (int)dev.Sources;
+            return (src & 0x00000400) != 0 || (src & 0x01000000) != 0;
+        }
+
+        public void OnInputDeviceAdded(int deviceId)
+        {
+            try
+            {
+                var dev = InputDevice.GetDevice(deviceId);
+                if (!IsGamepadDevice(dev))
+                    return;
+                var name = string.IsNullOrWhiteSpace(dev.Name) ? $"Mando #{deviceId}" : dev.Name;
+                _connectedGamepads[deviceId] = name;
+                AndroidPlatformBridge.NotifyGamepadConnection(name, true);
+            }
+            catch { }
+        }
+
+        public void OnInputDeviceChanged(int deviceId)
+        {
+            try
+            {
+                var dev = InputDevice.GetDevice(deviceId);
+                if (IsGamepadDevice(dev) && !_connectedGamepads.ContainsKey(deviceId))
+                {
+                    var name = string.IsNullOrWhiteSpace(dev.Name) ? $"Mando #{deviceId}" : dev.Name;
+                    _connectedGamepads[deviceId] = name;
+                    AndroidPlatformBridge.NotifyGamepadConnection(name, true);
+                }
+            }
+            catch { }
+        }
+
+        public void OnInputDeviceRemoved(int deviceId)
+        {
+            try
+            {
+                if (_connectedGamepads.TryGetValue(deviceId, out var name))
+                {
+                    _connectedGamepads.Remove(deviceId);
+                    AndroidPlatformBridge.NotifyGamepadConnection(name, false);
+                }
+            }
+            catch { }
+        }
+
+        protected override void OnDestroy()
+        {
+            try
+            {
+                _androidInputManager?.UnregisterInputDeviceListener(this);
+            }
+            catch { }
+            base.OnDestroy();
+        }
+
         public override bool DispatchKeyEvent(KeyEvent e)
         {
             if (e != null && e.KeyCode == Keycode.VolumeDown && e.Action == KeyEventActions.Down)
@@ -912,7 +1089,76 @@ namespace QuaverAndroid
                 }
                 return true;
             }
+
+            if (e != null && !_reportShown)
+            {
+                var kc = (int)e.KeyCode;
+                var src = (int)e.Source;
+                var isGamepadSource = (src & 0x00000400) != 0 || (src & 0x01000000) != 0;
+                if (kc == 4 && !isGamepadSource) // Keycode.Back sistema
+                {
+                    if (e.Action == KeyEventActions.Down && e.RepeatCount == 0)
+                        AndroidPlatformBridge.IsNativeBackPressed = true;
+                    else if (e.Action == KeyEventActions.Up)
+                        AndroidPlatformBridge.IsNativeBackPressed = false;
+                    return true;
+                }
+
+                var mappedKc = (kc == 4 && isGamepadSource) ? 97 : kc;
+                var fromPad = isGamepadSource || (src & 0x00000200) != 0
+                    || (kc >= 96 && kc <= 110) || (kc >= 19 && kc <= 23);
+                if (fromPad && kc != 24 && kc != 25 && kc != 26)
+                {
+                    if (e.Device != null && !_connectedGamepads.ContainsKey(e.DeviceId) && IsGamepadDevice(e.Device))
+                    {
+                        var name = string.IsNullOrWhiteSpace(e.Device.Name) ? $"Mando #{e.DeviceId}" : e.Device.Name;
+                        _connectedGamepads[e.DeviceId] = name;
+                        AndroidPlatformBridge.NotifyGamepadConnection(name, true);
+                    }
+
+                    if (e.Action == KeyEventActions.Down)
+                    {
+                        if (e.RepeatCount == 0)
+                            AndroidPlatformBridge.NotifyNativeGamepadButton(mappedKc, true);
+                        return true;
+                    }
+                    if (e.Action == KeyEventActions.Up)
+                    {
+                        AndroidPlatformBridge.NotifyNativeGamepadButton(mappedKc, false);
+                        return true;
+                    }
+                }
+            }
+
             return base.DispatchKeyEvent(e);
+        }
+
+        public override bool DispatchGenericMotionEvent(MotionEvent e)
+        {
+            if (e != null && (((int)e.Source & 0x01000000) != 0 || ((int)e.Source & 0x00000400) != 0))
+            {
+                try
+                {
+                    if (e.Device != null && !_connectedGamepads.ContainsKey(e.DeviceId) && IsGamepadDevice(e.Device))
+                    {
+                        var name = string.IsNullOrWhiteSpace(e.Device.Name) ? $"Mando #{e.DeviceId}" : e.Device.Name;
+                        _connectedGamepads[e.DeviceId] = name;
+                        AndroidPlatformBridge.NotifyGamepadConnection(name, true);
+                    }
+
+                    var lx = e.GetAxisValue((Axis)0);
+                    var ly = e.GetAxisValue((Axis)1);
+                    var hx = e.GetAxisValue((Axis)15);
+                    var hy = e.GetAxisValue((Axis)16);
+                    var lt = Math.Max(e.GetAxisValue((Axis)17), e.GetAxisValue((Axis)23));
+                    var rt = Math.Max(e.GetAxisValue((Axis)18), e.GetAxisValue((Axis)22));
+                    AndroidPlatformBridge.NotifyNativeGamepadAxes(lx, ly, hx, hy, lt, rt);
+                    return true;
+                }
+                catch { }
+            }
+            return base.DispatchGenericMotionEvent(e);
+        } 
         }
 
         private string BuildLogText()
@@ -2078,6 +2324,7 @@ using SharpCompress.Archives;
 using SharpCompress.Common;
 using SteamKit2;
 using SteamKit2.Authentication;
+using SteamKit2.Discovery; 
 using SteamKit2.CDN;
 using SteamKit2.Internal;
 using CdnServer = SteamKit2.CDN.Server; 
@@ -2179,6 +2426,41 @@ namespace Quaver.Shared.Online.Workshop
         public bool QueuedMaps { get; set; }
         public ulong PrimaryId { get; set; }
     }
+    internal sealed class AndroidMachineInfoProvider : IMachineInfoProvider
+    {
+        private readonly string _idFilePath;
+        private readonly byte[] _cachedId;
+
+        public AndroidMachineInfoProvider(string stateDir)
+        {
+            try
+            {
+                Directory.CreateDirectory(stateDir);
+                _idFilePath = Path.Combine(stateDir, "steam-machine-id.bin");
+                if (File.Exists(_idFilePath))
+                {
+                    var bytes = File.ReadAllBytes(_idFilePath);
+                    if (bytes != null && bytes.Length >= 16)
+                    {
+                        _cachedId = bytes;
+                        return;
+                    }
+                }
+
+                var guid = Guid.NewGuid().ToByteArray();
+                _cachedId = guid;
+                File.WriteAllBytes(_idFilePath, guid);
+            }
+            catch
+            {
+                _cachedId = Guid.NewGuid().ToByteArray();
+            }
+        }
+
+        public byte[] GetMachineGuid() => _cachedId;
+        public byte[] GetMacAddress() => _cachedId;
+        public byte[] GetDiskId() => _cachedId;
+    }
 
     public sealed class InteractiveSteamAuthenticator : IAuthenticator
     {
@@ -2236,6 +2518,7 @@ namespace Quaver.Shared.Online.Workshop
         private TaskCompletionSource<bool> _connectedTcs;
         private TaskCompletionSource<SteamUser.LoggedOnCallback> _loggedOnTcs;
         private bool _freeLicenseRequested;
+        private static bool _debugLogHooked; 
 
         public WorkshopAuthState AuthState { get; private set; } = WorkshopAuthState.Disconnected;
         public string AccountName { get; private set; } = string.Empty;
@@ -2250,7 +2533,37 @@ namespace Quaver.Shared.Online.Workshop
         private SteamWorkshopService()
         {
             _http.DefaultRequestHeaders.UserAgent.ParseAdd("QuaverAndroid-Workshop/1.0");
+            if (!_debugLogHooked)
+            {
+                _debugLogHooked = true;
+                try
+                {
+                    DebugLog.Enabled = true;
+                    DebugLog.AddListener((cat, msg) =>
+                    {
+                        var line = $"[SteamKit2:{cat}] {msg}";
+                        _lastDebugLog = line;
+                        Logger.Debug(line, LogType.Network);
+                    });
+                }
+                catch { }
+            } 
             LoadSessionFromDisk();
+        }
+        private SteamConfiguration GetOrCreateSteamConfig(ProtocolTypes protocols)
+        {
+            var baseDir = Path.GetDirectoryName(GetSessionFilePath()) ?? GetWorkshopRootDir();
+            var serversFile = Path.Combine(baseDir, "steam-cm-servers.bin");
+            if (_steamConfig == null || _steamConfig.ProtocolTypes != protocols)
+            {
+                _steamConfig = SteamConfiguration.Create(b => b
+                    .WithProtocolTypes(protocols)
+                    .WithConnectionTimeout(TimeSpan.FromSeconds(15))
+                    .WithDirectoryFetch(true)
+                    .WithServerListProvider(new FileStorageServerListProvider(serversFile))
+                    .WithMachineInfoProvider(new AndroidMachineInfoProvider(baseDir)));
+            }
+            return _steamConfig;
         }
 
         public static string GetSessionFilePath()
@@ -2323,29 +2636,154 @@ namespace Quaver.Shared.Online.Workshop
             }
         }
 
-        public void SignOut()
+        private void ResetClientUnsafe(ProtocolTypes protocols = ProtocolTypes.WebSocket | ProtocolTypes.Tcp)
         {
-            try
-            {
-                var path = GetSessionFilePath();
-                if (File.Exists(path))
-                    File.Delete(path);
-            }
-            catch
-            {
-            }
+            var epoch = Interlocked.Increment(ref _clientEpoch);
+            _connectedTcs = null;
+            _loggedOnTcs = null;
 
-            _savedSession = null;
-            AccountName = string.Empty;
-            AuthenticatedSteamId = 0;
-            _depotKeys.Clear();
-            _cdnTokens.Clear();
-            _freeLicenseRequested = false;
+            var oldCts = _pumpCts;
+            _pumpCts = new CancellationTokenSource();
+            var localCts = _pumpCts;
+            try { oldCts?.Cancel(); } catch { }
 
-            try { _steamUser?.LogOff(); } catch { }
-            ResetClientUnsafe();
-            SetAuthState(WorkshopAuthState.Disconnected, "Sesión cerrada");
+            var oldClient = _client;
+            try { oldClient?.Disconnect(); } catch { }
+
+            var cfg = GetOrCreateSteamConfig(protocols);
+            var client = new SteamClient(cfg);
+            var callbacks = new CallbackManager(client);
+
+            _client = client;
+            _callbacks = callbacks;
+            _steamUser = client.GetHandler<SteamUser>();
+            _steamApps = client.GetHandler<SteamApps>();
+            _steamContent = client.GetHandler<SteamContent>();
+            var unified = client.GetHandler<SteamUnifiedMessages>();
+            _publishedFile = unified.CreateService<PublishedFile>();
+
+            callbacks.Subscribe<SteamClient.ConnectedCallback>(cb => OnConnected(epoch, cb));
+            callbacks.Subscribe<SteamClient.DisconnectedCallback>(cb => OnDisconnected(epoch, cb));
+            callbacks.Subscribe<SteamUser.LoggedOnCallback>(cb => OnLoggedOn(epoch, cb));
+            callbacks.Subscribe<SteamUser.LoggedOffCallback>(cb => OnLoggedOff(epoch, cb));
+
+            _callbackThread = new Thread(() =>
+            {
+                while (!localCts.IsCancellationRequested && Interlocked.Read(ref _clientEpoch) == epoch)
+                {
+                    try
+                    {
+                        callbacks.RunWaitCallbacks(TimeSpan.FromMilliseconds(150));
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warning("SteamKit2 callback loop: " + ex.Message, LogType.Network);
+                        Thread.Sleep(200);
+                    }
+                }
+            })
+            {
+                IsBackground = true,
+                Name = $"SteamWorkshop-Callbacks-{epoch}"
+            };
+            _callbackThread.Start();
         }
+
+        private void OnConnected(long epoch, SteamClient.ConnectedCallback cb)
+        {
+            if (epoch != Interlocked.Read(ref _clientEpoch))
+                return;
+            _connectedTcs?.TrySetResult(true);
+        }
+
+        private void OnDisconnected(long epoch, SteamClient.DisconnectedCallback cb)
+        {
+            if (epoch != Interlocked.Read(ref _clientEpoch))
+                return;
+
+            var detail = string.IsNullOrWhiteSpace(_lastDebugLog) ? "Desconectado de los servidores de Steam" : $"Desconectado de Steam ({_lastDebugLog})";
+            _connectedTcs?.TrySetException(new IOException(detail));
+            _loggedOnTcs?.TrySetException(new IOException("Desconectado durante el inicio de sesión de Steam"));
+
+            if (!cb.UserInitiated && AuthState != WorkshopAuthState.Connecting && AuthState != WorkshopAuthState.AwaitingCredentialsGuard && AuthState != WorkshopAuthState.AwaitingQrApproval)
+            {
+                SetAuthState(WorkshopAuthState.Disconnected, "Conexión con Steam perdida");
+            }
+        }
+
+        private void OnLoggedOn(long epoch, SteamUser.LoggedOnCallback cb)
+        {
+            if (epoch != Interlocked.Read(ref _clientEpoch))
+                return;
+            _loggedOnTcs?.TrySetResult(cb);
+        }
+
+        private void OnLoggedOff(long epoch, SteamUser.LoggedOffCallback cb)
+        {
+            if (epoch != Interlocked.Read(ref _clientEpoch))
+                return;
+            if (AuthState == WorkshopAuthState.Authenticated || AuthState == WorkshopAuthState.Anonymous)
+                SetAuthState(WorkshopAuthState.Disconnected, $"Desconectado de Steam ({cb.Result})");
+        }
+
+        private async Task ConnectTransportAsync(CancellationToken ct)
+        {
+            Exception lastErr = null;
+            var attempts = new[]
+            {
+                ProtocolTypes.WebSocket,
+                ProtocolTypes.WebSocket,
+                ProtocolTypes.WebSocket | ProtocolTypes.Tcp,
+                ProtocolTypes.Tcp
+            };
+
+            for (var i = 0; i < attempts.Length; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var prot = attempts[i];
+                    var cfg = GetOrCreateSteamConfig(prot);
+                    try
+                    {
+                        var servers = cfg.ServerList.GetAllEndPoints();
+                        if (servers == null || !servers.Any(s => (s.ProtocolTypes & prot) != 0))
+                            await SteamDirectory.LoadAsync(cfg, ct).ConfigureAwait(false);
+                    }
+                    catch { }
+
+                    ResetClientUnsafe(prot);
+                    var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _connectedTcs = tcs;
+                    _client.Connect();
+
+                    using (var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                    {
+                        timeoutCts.CancelAfter(TimeSpan.FromSeconds(12));
+                        var delayTask = Task.Delay(Timeout.Infinite, timeoutCts.Token);
+                        var finished = await Task.WhenAny(tcs.Task, delayTask).ConfigureAwait(false);
+                        if (finished != tcs.Task)
+                            throw new TimeoutException("Tiempo de espera agotado conectando con Steam");
+                        await tcs.Task.ConfigureAwait(false);
+                        return;
+                    }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    lastErr = ex;
+                    Logger.Warning($"Steam connect intento {i + 1}/{attempts.Length} fallido: {ex.Message}", LogType.Network);
+                    AndroidDiagnostics.Trace($"Steam connect intento {i + 1} ({attempts[i]}) ERR: {ex.Message}");
+                    if (i + 1 < attempts.Length)
+                        await Task.Delay(350, ct).ConfigureAwait(false);
+                }
+            }
+
+            throw lastErr ?? new IOException("No se pudo conectar con los servidores de Steam");
+        } 
 
         private void SetAuthState(WorkshopAuthState state, string message)
         {
