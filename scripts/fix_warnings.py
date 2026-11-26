@@ -6775,3 +6775,321 @@ namespace Quaver.Shared.Input.Android
 """,
     encoding="utf-8",
 ) 
+# 23) TouchPlayfieldOverlay + Hooks en Gameplay (InputManagerKeys, HitObjectManagerKeys, GameplayScreen, GameplayScreenView, QuaverGame)
+android_input_dir = root / "Quaver.Shared" / "Input" / "Android"
+android_input_dir.mkdir(parents=True, exist_ok=True)
+(android_input_dir / "TouchPlayfieldOverlay.cs").write_text(
+    """using System;
+using Microsoft.Xna.Framework;
+using Quaver.Shared.Assets;
+using Quaver.Shared.Screens.Gameplay;
+using Wobble.Graphics;
+using Wobble.Graphics.Sprites;
+using Wobble.Graphics.Sprites.Text;
+using Wobble.Managers;
+using ColorHelper = Quaver.Shared.Helpers.ColorHelper;
+
+namespace Quaver.Shared.Input.Android
+{
+    public sealed class TouchPlayfieldOverlay : Container
+    {
+        private readonly GameplayScreen _screen;
+        private readonly int _keyCount;
+        private readonly Sprite[] _laneBoxes;
+        private readonly Sprite[] _laneBars;
+        private readonly SpriteTextPlus[] _laneLabels;
+        private readonly Sprite _pauseBox;
+        private readonly SpriteTextPlus _pauseLabel;
+
+        public TouchPlayfieldOverlay(GameplayScreen screen, int keyCount)
+        {
+            _screen = screen;
+            _keyCount = Math.Clamp(keyCount, 1, 10);
+            _laneBoxes = new Sprite[_keyCount];
+            _laneBars = new Sprite[_keyCount];
+            _laneLabels = new SpriteTextPlus[_keyCount];
+
+            AndroidControlsManager.Instance.SetGameplayContext(true, screen.IsPaused, _keyCount);
+
+            for (var i = 0; i < _keyCount; i++)
+            {
+                var box = new Sprite
+                {
+                    Parent = this,
+                    Image = UserInterface.BlankBox,
+                    Tint = ColorHelper.HexToColor("#111722"),
+                    UsePreviousSpriteBatchOptions = true
+                };
+                box.AddBorder(ColorHelper.HexToColor("#45D6F5"), 2);
+
+                var bar = new Sprite
+                {
+                    Parent = box,
+                    Image = UserInterface.BlankBox,
+                    Alignment = Alignment.BotCenter,
+                    Tint = ColorHelper.HexToColor("#45D6F5"),
+                    UsePreviousSpriteBatchOptions = true
+                };
+
+                var lbl = new SpriteTextPlus(FontManager.GetWobbleFont(Fonts.InterSemiBold), $"{i + 1}", 26)
+                {
+                    Parent = box,
+                    Alignment = Alignment.MidCenter,
+                    Tint = Color.White,
+                    UsePreviousSpriteBatchOptions = true
+                };
+
+                _laneBoxes[i] = box;
+                _laneBars[i] = bar;
+                _laneLabels[i] = lbl;
+            }
+
+            _pauseBox = new Sprite
+            {
+                Parent = this,
+                Image = UserInterface.BlankBox,
+                Tint = ColorHelper.HexToColor("#141923"),
+                UsePreviousSpriteBatchOptions = true
+            };
+            _pauseBox.AddBorder(ColorHelper.HexToColor("#45D6F5"), 2);
+
+            _pauseLabel = new SpriteTextPlus(FontManager.GetWobbleFont(Fonts.InterSemiBold), "II", 22)
+            {
+                Parent = _pauseBox,
+                Alignment = Alignment.MidCenter,
+                Tint = Color.White,
+                UsePreviousSpriteBatchOptions = true
+            };
+        }
+
+        public override void Update(GameTime gameTime)
+        {
+            base.Update(gameTime);
+
+            var ctrl = AndroidControlsManager.Instance;
+            var show = OperatingSystem.IsAndroid()
+                && ctrl.TouchEnabledBindable.Value
+                && !_screen.IsPaused
+                && !_screen.Failed
+                && !_screen.IsPlayComplete;
+
+            var baseAlpha = Math.Clamp(ctrl.TouchOpacityPercentBindable.Value / 100f, 0.10f, 0.95f);
+
+            for (var i = 0; i < _keyCount; i++)
+            {
+                var box = _laneBoxes[i];
+                box.Visible = show;
+                if (!show) continue;
+
+                var rect = ctrl.GetTouchLaneRect(i);
+                var pressed = ctrl.IsGameplayLaneDown(i);
+
+                box.X = rect.X;
+                box.Y = rect.Y;
+                box.Width = rect.Width;
+                box.Height = rect.Height;
+                box.Tint = pressed ? ColorHelper.HexToColor("#257EA8") : ColorHelper.HexToColor("#0E141E");
+                box.Alpha = pressed ? Math.Min(0.88f, baseAlpha + 0.35f) : baseAlpha * 0.65f;
+                box.Border.Alpha = pressed ? 0.95f : Math.Min(0.85f, baseAlpha + 0.15f);
+
+                _laneBars[i].Width = Math.Max(8f, rect.Width - 12f);
+                _laneBars[i].Height = pressed ? 10f : 5f;
+                _laneBars[i].Y = -6f;
+                _laneBars[i].Alpha = pressed ? 1f : Math.Min(0.85f, baseAlpha + 0.25f);
+
+                _laneLabels[i].Visible = ctrl.TouchShowLabelsBindable.Value;
+                _laneLabels[i].Alpha = pressed ? 1f : Math.Clamp(baseAlpha + 0.2f, 0.25f, 0.9f);
+            }
+
+            _pauseBox.Visible = show && _screen.SpectatorClient == null;
+            if (_pauseBox.Visible)
+            {
+                var pr = ctrl.TouchPauseRect;
+                _pauseBox.X = pr.X;
+                _pauseBox.Y = pr.Y;
+                _pauseBox.Width = pr.Width;
+                _pauseBox.Height = pr.Height;
+                _pauseBox.Alpha = Math.Clamp(baseAlpha + 0.25f, 0.45f, 0.92f);
+                _pauseBox.Border.Alpha = 0.85f;
+                _pauseLabel.Alpha = 0.95f;
+            }
+        }
+    }
+}
+""",
+    encoding="utf-8",
+)
+
+imk_cs = root / "Quaver.Shared" / "Screens" / "Gameplay" / "Rulesets" / "Input" / "InputManagerKeys.cs"
+if imk_cs.is_file():
+    imkt = imk_cs.read_text(encoding="utf-8-sig")
+    if "AndroidControlsManager" not in imkt:
+        imkt = imkt.replace(
+            "using Quaver.Shared.Input.Global;",
+            "using Quaver.Shared.Input.Global;\nusing Quaver.Shared.Input.Android;",
+            1,
+        )
+        old_imk_loop = """                // A key was uniquely pressed.
+                if (!BindingStore[lane].Pressed && (GenericKeyManager.IsUniquePress(BindingStore[lane].Key.Value) &&
+                                                    !Ruleset.Screen.InReplayMode || Ruleset.Screen.InReplayMode && ReplayInputManager.UniquePresses[lane]))
+                {
+                    // Update Replay Manager. Reset UniquePresses value for this lane.
+                    if (Ruleset.Screen.InReplayMode)
+                        ReplayInputManager.UniquePresses[inputLane] = false;
+
+                    // Toggle this key on from BindingStore and enable needsUpdating value to handle key press
+                    BindingStore[lane].Pressed = true;
+                    needsUpdating = true;
+
+                    var screenView = (GameplayScreenView)Ruleset.Screen.View;
+                    screenView.KpsDisplay.AddClick();
+                }
+                // A key was uniquely released.
+                else if (BindingStore[lane].Pressed && (GenericKeyManager.IsUniqueRelease(BindingStore[lane].Key.Value) &&
+                                                        !Ruleset.Screen.InReplayMode
+                                                    || Ruleset.Screen.InReplayMode && ReplayInputManager.UniqueReleases[lane]))"""
+        new_imk_loop = """                var androidLaneDown = !Ruleset.Screen.InReplayMode && AndroidControlsManager.Instance.IsGameplayLaneDown(inputLane);
+
+                // A key was uniquely pressed.
+                if (!BindingStore[lane].Pressed && ((GenericKeyManager.IsUniquePress(BindingStore[lane].Key.Value) || androidLaneDown) &&
+                                                    !Ruleset.Screen.InReplayMode || Ruleset.Screen.InReplayMode && ReplayInputManager.UniquePresses[lane]))
+                {
+                    // Update Replay Manager. Reset UniquePresses value for this lane.
+                    if (Ruleset.Screen.InReplayMode)
+                        ReplayInputManager.UniquePresses[inputLane] = false;
+
+                    // Toggle this key on from BindingStore and enable needsUpdating value to handle key press
+                    BindingStore[lane].Pressed = true;
+                    needsUpdating = true;
+
+                    var screenView = (GameplayScreenView)Ruleset.Screen.View;
+                    screenView.KpsDisplay.AddClick();
+                }
+                // A key was uniquely released.
+                else if (BindingStore[lane].Pressed && (!GenericKeyManager.IsDown(BindingStore[lane].Key.Value) && !androidLaneDown &&
+                                                        !Ruleset.Screen.InReplayMode
+                                                    || Ruleset.Screen.InReplayMode && ReplayInputManager.UniqueReleases[lane]))"""
+        assert old_imk_loop in imkt, "InputManagerKeys loop anchor missing"
+        imkt = imkt.replace(old_imk_loop, new_imk_loop, 1)
+
+        old_imk_judg = """            if (ReplayInputManager == null)
+            {
+                playfield.Stage.ComboDisplay.MakeVisible();"""
+        new_imk_judg = """            if (ReplayInputManager == null)
+            {
+                AndroidControlsManager.Instance.OnGameplayJudgement(judgement, AndroidControlsManager.Instance.IsTouchLaneDown(lane));
+                playfield.Stage.ComboDisplay.MakeVisible();"""
+        assert old_imk_judg in imkt, "InputManagerKeys judgement anchor missing"
+        imkt = imkt.replace(old_imk_judg, new_imk_judg, 1)
+        imk_cs.write_text(imkt, encoding="utf-8")
+
+homk_cs = root / "Quaver.Shared" / "Screens" / "Gameplay" / "Rulesets" / "Keys" / "HitObjects" / "HitObjectManagerKeys.cs"
+if homk_cs.is_file():
+    homkt = homk_cs.read_text(encoding="utf-8-sig")
+    if "AndroidControlsManager" not in homkt:
+        homkt = homkt.replace(
+            "using Quaver.Shared.Screens.Gameplay.Rulesets.Input;",
+            "using Quaver.Shared.Screens.Gameplay.Rulesets.Input;\nusing Quaver.Shared.Input.Android;",
+            1,
+        )
+        old_homk_miss = """                    if (im?.ReplayInputManager == null)
+                    {
+                        playfield.Stage.ComboDisplay.MakeVisible();
+                        playfield.Stage.HitBubbles.AddJudgement(Judgement.Miss);"""
+        new_homk_miss = """                    if (im?.ReplayInputManager == null)
+                    {
+                        AndroidControlsManager.Instance.OnGameplayJudgement(Judgement.Miss, false);
+                        playfield.Stage.ComboDisplay.MakeVisible();
+                        playfield.Stage.HitBubbles.AddJudgement(Judgement.Miss);"""
+        assert old_homk_miss in homkt, "HitObjectManagerKeys miss anchor missing"
+        homkt = homkt.replace(old_homk_miss, new_homk_miss, 1)
+        homk_cs.write_text(homkt, encoding="utf-8")
+
+gs_cs = root / "Quaver.Shared" / "Screens" / "Gameplay" / "GameplayScreen.cs"
+if gs_cs.is_file():
+    gst = gs_cs.read_text(encoding="utf-8-sig")
+    if "AndroidControlsManager" not in gst:
+        gst = gst.replace(
+            "using Quaver.Shared.Input.Global;",
+            "using Quaver.Shared.Input.Global;\nusing Quaver.Shared.Input.Android;",
+            1,
+        )
+        old_gs_upd = """        public override void Update(GameTime gameTime)
+        {
+            TimeSinceLastJudgementsSentToServer += gameTime.ElapsedGameTime.TotalMilliseconds;"""
+        new_gs_upd = """        public override void Update(GameTime gameTime)
+        {
+            AndroidControlsManager.Instance.SetGameplayContext(!IsSongSelectPreview, IsPaused, ModeHelper.ToKeyCount(Map.Mode, Map.HasScratchKey));
+            TimeSinceLastJudgementsSentToServer += gameTime.ElapsedGameTime.TotalMilliseconds;"""
+        assert old_gs_upd in gst, "GameplayScreen Update anchor missing"
+        gst = gst.replace(old_gs_upd, new_gs_upd, 1)
+
+        old_gs_inp = """            // Handle pausing
+            if (!Failed && !IsPlayComplete && !IsSongSelectPreview)
+                HandlePauseInput(gameTime);"""
+        new_gs_inp = """            if (AndroidControlsManager.Instance.ConsumeGameplayPauseJustPressed() && !IsPaused && !Failed && !IsPlayComplete && !IsSongSelectPreview && SpectatorClient == null && DialogManager.Dialogs.Count == 0 && OnlineManager.CurrentGame == null)
+            {
+                TimePauseKeyHeld = TimeToHoldPause;
+                Pause(gameTime);
+                return;
+            }
+
+            // Handle pausing
+            if (!Failed && !IsPlayComplete && !IsSongSelectPreview)
+                HandlePauseInput(gameTime);"""
+        assert old_gs_inp in gst, "GameplayScreen HandleInput anchor missing"
+        gst = gst.replace(old_gs_inp, new_gs_inp, 1)
+
+        old_gs_des = """        public override void Destroy()
+        {
+            if (IsCalibratingOffset)"""
+        new_gs_des = """        public override void Destroy()
+        {
+            AndroidControlsManager.Instance.SetGameplayContext(false, false);
+            if (IsCalibratingOffset)"""
+        assert old_gs_des in gst, "GameplayScreen Destroy anchor missing"
+        gst = gst.replace(old_gs_des, new_gs_des, 1)
+        gs_cs.write_text(gst, encoding="utf-8")
+
+gsv_cs = root / "Quaver.Shared" / "Screens" / "Gameplay" / "GameplayScreenView.cs"
+if gsv_cs.is_file():
+    gsvt = gsv_cs.read_text(encoding="utf-8-sig")
+    if "TouchPlayfieldOverlay" not in gsvt:
+        gsvt = gsvt.replace(
+            "using Quaver.Shared.Modifiers;",
+            "using Quaver.Shared.Modifiers;\nusing Quaver.Shared.Input.Android;",
+            1,
+        )
+        old_gsv_pause = """            // Create pause screen last.
+            if (Screen.SpectatorClient == null)
+                PauseScreen = new PauseScreen(Screen) { Parent = Container };"""
+        new_gsv_pause = """            if (OperatingSystem.IsAndroid() && !Screen.IsSongSelectPreview && !Screen.InReplayMode)
+                new TouchPlayfieldOverlay(Screen, ModeHelper.ToKeyCount(Screen.Map.Mode, Screen.Map.HasScratchKey)) { Parent = Container };
+
+            // Create pause screen last.
+            if (Screen.SpectatorClient == null)
+                PauseScreen = new PauseScreen(Screen) { Parent = Container };"""
+        assert old_gsv_pause in gsvt, "GameplayScreenView pause anchor missing"
+        gsvt = gsvt.replace(old_gsv_pause, new_gsv_pause, 1)
+        gsv_cs.write_text(gsvt, encoding="utf-8")
+
+qg_cs = root / "Quaver.Shared" / "QuaverGame.cs"
+if qg_cs.is_file():
+    qgt = qg_cs.read_text(encoding="utf-8-sig")
+    if "AndroidControlsManager" not in qgt:
+        qgt = qgt.replace(
+            "using Quaver.Shared.Discord;",
+            "using Quaver.Shared.Discord;\nusing Quaver.Shared.Input.Android;",
+            1,
+        )
+        old_qg_upd = """            base.Update(gameTime);
+
+            if (SteamManager.IsInitialized)"""
+        new_qg_upd = """            AndroidControlsManager.Instance.Update(gameTime);
+
+            base.Update(gameTime);
+
+            if (SteamManager.IsInitialized)"""
+        assert old_qg_upd in qgt, "QuaverGame Update anchor missing"
+        qgt = qgt.replace(old_qg_upd, new_qg_upd, 1)
+        qg_cs.write_text(qgt, encoding="utf-8")
