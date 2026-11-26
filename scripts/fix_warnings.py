@@ -1,5 +1,6 @@
 from pathlib import Path
-import sys
+import re
+import sys 
 
 root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
 
@@ -1158,7 +1159,6 @@ namespace QuaverAndroid
                 catch { }
             }
             return base.DispatchGenericMotionEvent(e);
-        } 
         }
 
         private string BuildLogText()
@@ -6187,3 +6187,591 @@ if om_cs.is_file():
         }"""
         omt = omt.replace(old_om_end, new_om_end, 1)
         om_cs.write_text(omt, encoding="utf-8")
+        # 22) AndroidControlsManager (Touch Multitouch 1K-10K + Mando HID/BT/USB + Config + Vibracion)
+android_input_dir = root / "Quaver.Shared" / "Input" / "Android"
+android_input_dir.mkdir(parents=True, exist_ok=True)
+(android_input_dir / "AndroidControlsManager.cs").write_text(
+    """using System;
+using System.Collections.Generic;
+using System.IO;
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Input;
+using Microsoft.Xna.Framework.Input.Touch;
+using MonoGame.Extended;
+using Newtonsoft.Json;
+using Quaver.API.Enums;
+using Wobble;
+using Wobble.Bindables;
+using Wobble.Platform;
+using Wobble.Window;
+
+namespace Quaver.Shared.Input.Android
+{
+    public sealed class AndroidControlsManager
+    {
+        public static AndroidControlsManager Instance { get; } = new AndroidControlsManager();
+
+        private const int MaxLanes = 10;
+        private const int StickLeft = 1001, StickRight = 1002, StickUp = 1003, StickDown = 1004;
+
+        private static readonly string[] Preset4KNames =
+        {
+            "D-Pad + Face (Left/Down/X/B)",
+            "Shoulders + Triggers (L2/L1/R1/R2)",
+            "DJMAX Layout (Left/Up/Y/B)",
+            "D-Pad Alt (Left/Right/X/B)"
+        };
+
+        private static readonly int[][] Preset4KButtons =
+        {
+            new[] { 21, 20, 99, 97 },
+            new[] { 104, 102, 103, 105 },
+            new[] { 21, 19, 100, 97 },
+            new[] { 21, 22, 99, 97 }
+        };
+
+        private static readonly int[] GenericDefaults = { 21, 20, 19, 22, 104, 102, 103, 105, 99, 97 };
+
+        private sealed class SavedConfig
+        {
+            public bool TouchEnabled { get; set; } = true;
+            public int TouchHeightPercent { get; set; } = 32;
+            public int TouchMarginBottom { get; set; } = 12;
+            public int TouchSpacing { get; set; } = 8;
+            public int TouchOpacityPercent { get; set; } = 45;
+            public bool TouchEdgeGuard { get; set; } = true;
+            public bool TouchShowLabels { get; set; } = true;
+            public bool TouchVibrationEnabled { get; set; } = true;
+            public bool GamepadEnabled { get; set; } = true;
+            public int GamepadDeadzone { get; set; } = 22;
+            public bool GamepadVibrationEnabled { get; set; } = true;
+            public int GamepadVibrationIntensity { get; set; } = 65;
+            public Dictionary<int, int[]> GamepadBindings { get; set; } = new Dictionary<int, int[]>();
+        }
+
+        public Bindable<bool> TouchEnabledBindable { get; } = new Bindable<bool>(true);
+        public BindableInt TouchHeightPercentBindable { get; } = new BindableInt(32, 18, 60);
+        public BindableInt TouchMarginBottomBindable { get; } = new BindableInt(12, 0, 160);
+        public BindableInt TouchSpacingBindable { get; } = new BindableInt(8, 0, 36);
+        public BindableInt TouchOpacityPercentBindable { get; } = new BindableInt(45, 10, 95);
+        public Bindable<bool> TouchEdgeGuardBindable { get; } = new Bindable<bool>(true);
+        public Bindable<bool> TouchShowLabelsBindable { get; } = new Bindable<bool>(true);
+        public Bindable<bool> TouchVibrationEnabledBindable { get; } = new Bindable<bool>(true);
+        public Bindable<bool> GamepadEnabledBindable { get; } = new Bindable<bool>(true);
+        public BindableInt GamepadDeadzoneBindable { get; } = new BindableInt(22, 5, 60);
+        public Bindable<bool> GamepadVibrationEnabledBindable { get; } = new Bindable<bool>(true);
+        public BindableInt GamepadVibrationIntensityBindable { get; } = new BindableInt(65, 10, 100);
+
+        private readonly object _lock = new object();
+        private readonly Dictionary<int, int[]> _bindings = new Dictionary<int, int[]>();
+        private readonly HashSet<int> _nativeButtons = new HashSet<int>();
+        private readonly HashSet<int> _axisButtons = new HashSet<int>();
+        private readonly HashSet<int> _xnaButtons = new HashSet<int>();
+        private readonly HashSet<int> _mergedButtons = new HashSet<int>();
+        private readonly HashSet<int> _prevMergedButtons = new HashSet<int>();
+        private readonly bool[] _touchLaneDown = new bool[MaxLanes];
+        private readonly bool[] _gamepadLaneDown = new bool[MaxLanes];
+        private readonly RectangleF[] _touchLaneRects = new RectangleF[MaxLanes];
+
+        private bool _initialized, _suppressSave, _inGameplay, _isPaused;
+        private int _activeKeyCount = 4, _pendingCapturedButton = -1;
+        private float _zoneLeftX, _zoneRightX, _zoneTopY, _zoneBottomY;
+        private bool _touchPauseJustPressed, _gamepadPauseJustPressed;
+        private long _lastVibrateTick;
+        private Action<int> _captureCallback;
+
+        public RectangleF TouchPauseRect { get; private set; }
+        public int ActiveKeyCount => _activeKeyCount;
+
+        private AndroidControlsManager() => ResetBindingsDictionary();
+
+        public void Initialize()
+        {
+            if (_initialized) return;
+            _initialized = true;
+            LoadConfig();
+            HookBindables();
+            AndroidPlatformBridge.OnAfterTouchSnapshotUpdated += OnTouchSnapshotUpdated;
+            AndroidPlatformBridge.OnNativeGamepadButton += OnNativeGamepadButton;
+            AndroidPlatformBridge.OnNativeGamepadAxes += OnNativeGamepadAxes;
+            AndroidPlatformBridge.GetMenuNavVirtualKeysHandler = GetMenuNavVirtualKeys;
+            RecomputeTouchLayout();
+        }
+
+        public void SetGameplayContext(bool inGameplay, bool isPaused, int keyCount = 0)
+        {
+            lock (_lock)
+            {
+                _inGameplay = inGameplay;
+                _isPaused = isPaused;
+                if (keyCount > 0) _activeKeyCount = Math.Clamp(keyCount, 1, MaxLanes);
+                if (!inGameplay || isPaused)
+                {
+                    Array.Clear(_touchLaneDown, 0, _touchLaneDown.Length);
+                    if (!inGameplay) { _touchPauseJustPressed = false; _gamepadPauseJustPressed = false; }
+                }
+            }
+            AndroidPlatformBridge.SuppressMouseFromTouch =
+                OperatingSystem.IsAndroid() && inGameplay && !isPaused && TouchEnabledBindable.Value;
+            if (inGameplay) RecomputeTouchLayout();
+        }
+
+        public void Update(GameTime gameTime)
+        {
+            if (!_initialized) Initialize();
+            Action<int> captureCb = null;
+            var capturedCode = -1;
+            lock (_lock)
+            {
+                PollXnaGamepadLocked();
+                _prevMergedButtons.Clear();
+                foreach (var b in _mergedButtons) _prevMergedButtons.Add(b);
+                _mergedButtons.Clear();
+                if (GamepadEnabledBindable.Value)
+                {
+                    foreach (var b in _nativeButtons) _mergedButtons.Add(b);
+                    foreach (var b in _axisButtons) _mergedButtons.Add(b);
+                    foreach (var b in _xnaButtons) _mergedButtons.Add(b);
+                }
+                if (_captureCallback != null)
+                {
+                    if (_pendingCapturedButton < 0)
+                    {
+                        foreach (var b in _mergedButtons)
+                            if (!_prevMergedButtons.Contains(b)) { _pendingCapturedButton = b; break; }
+                    }
+                    if (_pendingCapturedButton >= 0)
+                    {
+                        capturedCode = _pendingCapturedButton;
+                        _pendingCapturedButton = -1;
+                        captureCb = _captureCallback;
+                        _captureCallback = null;
+                    }
+                }
+                Array.Clear(_gamepadLaneDown, 0, _gamepadLaneDown.Length);
+                if (GamepadEnabledBindable.Value && _inGameplay && !_isPaused)
+                {
+                    var binds = GetBindingsArrayLocked(_activeKeyCount);
+                    for (var i = 0; i < binds.Length && i < MaxLanes; i++)
+                        if (binds[i] > 0 && _mergedButtons.Contains(binds[i])) _gamepadLaneDown[i] = true;
+                    if ((_mergedButtons.Contains(108) && !_prevMergedButtons.Contains(108)) ||
+                        (_mergedButtons.Contains(109) && !_prevMergedButtons.Contains(109)))
+                        _gamepadPauseJustPressed = true;
+                }
+            }
+            captureCb?.Invoke(capturedCode);
+        }
+
+        public bool IsGameplayLaneDown(int lane)
+        {
+            if ((uint)lane >= MaxLanes) return false;
+            lock (_lock)
+                return _inGameplay && !_isPaused &&
+                    ((TouchEnabledBindable.Value && _touchLaneDown[lane]) ||
+                     (GamepadEnabledBindable.Value && _gamepadLaneDown[lane]));
+        }
+
+        public bool IsTouchLaneDown(int lane)
+        {
+            if ((uint)lane >= MaxLanes) return false;
+            lock (_lock) return _inGameplay && !_isPaused && TouchEnabledBindable.Value && _touchLaneDown[lane];
+        }
+
+        public bool ConsumeGameplayPauseJustPressed()
+        {
+            lock (_lock)
+            {
+                var fired = _touchPauseJustPressed || _gamepadPauseJustPressed;
+                _touchPauseJustPressed = false;
+                _gamepadPauseJustPressed = false;
+                return fired;
+            }
+        }
+
+        public RectangleF GetTouchLaneRect(int lane)
+        {
+            lock (_lock)
+            {
+                RecomputeTouchLayout();
+                return (uint)lane < MaxLanes ? _touchLaneRects[lane] : RectangleF.Empty;
+            }
+        }
+
+        public void OnGameplayJudgement(Judgement judgement, bool wasTouchHit)
+        {
+            if (!OperatingSystem.IsAndroid() || judgement == Judgement.Ghost) return;
+            var allow = wasTouchHit ? TouchVibrationEnabledBindable.Value : GamepadVibrationEnabledBindable.Value;
+            if (!allow || !AndroidPlatformBridge.HasVibrator) return;
+            var now = Environment.TickCount64;
+            if (now - _lastVibrateTick < 16) return;
+            _lastVibrateTick = now;
+            var intensity = GamepadVibrationIntensityBindable.Value / 100f;
+            var ms = judgement == Judgement.Miss ? 22 : 11;
+            var amp = judgement == Judgement.Miss ? 220 : 135;
+            AndroidPlatformBridge.Vibrate(ms, Math.Clamp((int)(amp * intensity), 15, 255));
+        }
+
+        public string[] GetGamepad4KPresetNames() => Preset4KNames;
+
+        public int GetCurrent4KPresetIndex()
+        {
+            lock (_lock)
+            {
+                var cur = GetBindingsArrayLocked(4);
+                for (var p = 0; p < Preset4KButtons.Length; p++)
+                {
+                    var match = true;
+                    for (var i = 0; i < 4; i++)
+                        if (cur[i] != Preset4KButtons[p][i]) { match = false; break; }
+                    if (match) return p;
+                }
+                return 0;
+            }
+        }
+
+        public void Apply4KPreset(int index)
+        {
+            if ((uint)index >= Preset4KButtons.Length) return;
+            lock (_lock) _bindings[4] = (int[])Preset4KButtons[index].Clone();
+            SaveConfig();
+        }
+
+        public int GetGamepadBindingForLane(int keyCount, int lane)
+        {
+            lock (_lock)
+            {
+                var arr = GetBindingsArrayLocked(keyCount);
+                return (uint)lane < arr.Length ? arr[lane] : 0;
+            }
+        }
+
+        public void SetGamepadBindingForLane(int keyCount, int lane, int button)
+        {
+            lock (_lock)
+            {
+                var arr = GetBindingsArrayLocked(keyCount);
+                if ((uint)lane < arr.Length) arr[lane] = button;
+            }
+            SaveConfig();
+        }
+
+        public void BeginButtonCapture(Action<int> onCaptured)
+        {
+            lock (_lock) { _pendingCapturedButton = -1; _captureCallback = onCaptured; }
+        }
+
+        public void CancelButtonCapture()
+        {
+            lock (_lock) { _captureCallback = null; _pendingCapturedButton = -1; }
+        }
+
+        public void ResetAllToDefaults()
+        {
+            _suppressSave = true;
+            try
+            {
+                TouchEnabledBindable.Value = true;
+                TouchHeightPercentBindable.Value = 32;
+                TouchMarginBottomBindable.Value = 12;
+                TouchSpacingBindable.Value = 8;
+                TouchOpacityPercentBindable.Value = 45;
+                TouchEdgeGuardBindable.Value = true;
+                TouchShowLabelsBindable.Value = true;
+                TouchVibrationEnabledBindable.Value = true;
+                GamepadEnabledBindable.Value = true;
+                GamepadDeadzoneBindable.Value = 22;
+                GamepadVibrationEnabledBindable.Value = true;
+                GamepadVibrationIntensityBindable.Value = 65;
+                lock (_lock) ResetBindingsDictionary();
+            }
+            finally { _suppressSave = false; }
+            RecomputeTouchLayout();
+            SaveConfig();
+        }
+
+        public static string FormatButtonLabel(int button) => button switch
+        {
+            19 => "D-Pad Up", 20 => "D-Pad Down", 21 => "D-Pad Left", 22 => "D-Pad Right", 23 => "D-Pad Center",
+            96 => "Button A", 97 => "Button B", 98 => "Button C", 99 => "Button X", 100 => "Button Y", 101 => "Button Z",
+            102 => "L1 / LB", 103 => "R1 / RB", 104 => "L2 / LT", 105 => "R2 / RT", 106 => "L3", 107 => "R3",
+            108 => "Start", 109 => "Select", 110 => "Mode",
+            StickLeft => "L-Stick Left", StickRight => "L-Stick Right", StickUp => "L-Stick Up", StickDown => "L-Stick Down",
+            <= 0 => "Unbound",
+            _ => $"Key {button}"
+        };
+
+        private void OnTouchSnapshotUpdated()
+        {
+            var touches = AndroidPlatformBridge.CurrentTouchSnapshot;
+            lock (_lock)
+            {
+                Array.Clear(_touchLaneDown, 0, _touchLaneDown.Length);
+                if (!_inGameplay || _isPaused || !TouchEnabledBindable.Value || touches == null || touches.Length == 0)
+                    return;
+                RecomputeTouchLayout();
+                var kc = Math.Clamp(_activeKeyCount, 1, MaxLanes);
+                var gd = GameBase.Game?.GraphicsDevice;
+                var scale = WindowManager.ScreenScale;
+                var sx = scale.X > 0.001f ? scale.X : 1f;
+                var sy = scale.Y > 0.001f ? scale.Y : 1f;
+                for (var i = 0; i < touches.Length; i++)
+                {
+                    var t = touches[i];
+                    if (t.State == TouchLocationState.Invalid || t.State == TouchLocationState.Released) continue;
+                    var px = t.Position.X;
+                    var py = t.Position.Y;
+                    if (gd != null && TouchPanel.DisplayWidth > 0 && TouchPanel.DisplayHeight > 0)
+                    {
+                        px = px * gd.PresentationParameters.BackBufferWidth / TouchPanel.DisplayWidth;
+                        py = py * gd.PresentationParameters.BackBufferHeight / TouchPanel.DisplayHeight;
+                    }
+                    var vx = px / sx;
+                    var vy = py / sy;
+                    if (t.State == TouchLocationState.Pressed && TouchPauseRect.Contains(vx, vy))
+                    {
+                        _touchPauseJustPressed = true;
+                        continue;
+                    }
+                    if (vy < _zoneTopY || vy > _zoneBottomY || vx < _zoneLeftX - 18f || vx > _zoneRightX + 18f) continue;
+                    var bestLane = -1;
+                    var bestDist = float.MaxValue;
+                    for (var l = 0; l < kc; l++)
+                    {
+                        var r = _touchLaneRects[l];
+                        var dist = Math.Abs(vx - (r.X + r.Width * 0.5f));
+                        if (dist < bestDist) { bestDist = dist; bestLane = l; }
+                    }
+                    if (bestLane >= 0) _touchLaneDown[bestLane] = true;
+                }
+            }
+        }
+
+        private void OnNativeGamepadButton(int keyCode, bool isDown)
+        {
+            lock (_lock)
+            {
+                if (isDown)
+                {
+                    if (_nativeButtons.Add(keyCode) && _captureCallback != null && _pendingCapturedButton < 0)
+                        _pendingCapturedButton = keyCode;
+                }
+                else _nativeButtons.Remove(keyCode);
+            }
+        }
+
+        private void OnNativeGamepadAxes(float lx, float ly, float hx, float hy, float lt, float rt)
+        {
+            var dz = Math.Clamp(GamepadDeadzoneBindable.Value / 100f, 0.05f, 0.85f);
+            lock (_lock)
+            {
+                SetAxisCodeLocked(21, hx < -0.5f); SetAxisCodeLocked(22, hx > 0.5f);
+                SetAxisCodeLocked(19, hy < -0.5f); SetAxisCodeLocked(20, hy > 0.5f);
+                SetAxisCodeLocked(104, lt > 0.35f); SetAxisCodeLocked(105, rt > 0.35f);
+                SetAxisCodeLocked(StickLeft, lx < -dz); SetAxisCodeLocked(StickRight, lx > dz);
+                SetAxisCodeLocked(StickUp, ly < -dz); SetAxisCodeLocked(StickDown, ly > dz);
+            }
+        }
+
+        private void SetAxisCodeLocked(int code, bool down)
+        {
+            if (down)
+            {
+                if (_axisButtons.Add(code) && _captureCallback != null && _pendingCapturedButton < 0)
+                    _pendingCapturedButton = code;
+            }
+            else _axisButtons.Remove(code);
+        }
+
+        private void PollXnaGamepadLocked()
+        {
+            _xnaButtons.Clear();
+            if (!GamepadEnabledBindable.Value) return;
+            try
+            {
+                var st = GamePad.GetState(PlayerIndex.One);
+                if (!st.IsConnected) return;
+                if (st.DPad.Up == ButtonState.Pressed) _xnaButtons.Add(19);
+                if (st.DPad.Down == ButtonState.Pressed) _xnaButtons.Add(20);
+                if (st.DPad.Left == ButtonState.Pressed) _xnaButtons.Add(21);
+                if (st.DPad.Right == ButtonState.Pressed) _xnaButtons.Add(22);
+                if (st.Buttons.A == ButtonState.Pressed) _xnaButtons.Add(96);
+                if (st.Buttons.B == ButtonState.Pressed) _xnaButtons.Add(97);
+                if (st.Buttons.X == ButtonState.Pressed) _xnaButtons.Add(99);
+                if (st.Buttons.Y == ButtonState.Pressed) _xnaButtons.Add(100);
+                if (st.Buttons.LeftShoulder == ButtonState.Pressed) _xnaButtons.Add(102);
+                if (st.Buttons.RightShoulder == ButtonState.Pressed) _xnaButtons.Add(103);
+                if (st.Triggers.Left > 0.35f) _xnaButtons.Add(104);
+                if (st.Triggers.Right > 0.35f) _xnaButtons.Add(105);
+                if (st.Buttons.LeftStick == ButtonState.Pressed) _xnaButtons.Add(106);
+                if (st.Buttons.RightStick == ButtonState.Pressed) _xnaButtons.Add(107);
+                if (st.Buttons.Start == ButtonState.Pressed) _xnaButtons.Add(108);
+                if (st.Buttons.Back == ButtonState.Pressed) _xnaButtons.Add(109);
+                var dz = Math.Clamp(GamepadDeadzoneBindable.Value / 100f, 0.05f, 0.85f);
+                var ls = st.ThumbSticks.Left;
+                if (ls.X < -dz) _xnaButtons.Add(StickLeft);
+                if (ls.X > dz) _xnaButtons.Add(StickRight);
+                if (ls.Y > dz) _xnaButtons.Add(StickUp);
+                if (ls.Y < -dz) _xnaButtons.Add(StickDown);
+            }
+            catch { }
+        }
+
+        private Keys[] GetMenuNavVirtualKeys()
+        {
+            if (!GamepadEnabledBindable.Value) return Array.Empty<Keys>();
+            lock (_lock)
+            {
+                if (_captureCallback != null || (_inGameplay && !_isPaused) || _mergedButtons.Count == 0)
+                    return Array.Empty<Keys>();
+                var keys = new List<Keys>(8);
+                if (_mergedButtons.Contains(19) || _mergedButtons.Contains(StickUp)) keys.Add(Keys.Up);
+                if (_mergedButtons.Contains(20) || _mergedButtons.Contains(StickDown)) keys.Add(Keys.Down);
+                if (_mergedButtons.Contains(21) || _mergedButtons.Contains(StickLeft)) keys.Add(Keys.Left);
+                if (_mergedButtons.Contains(22) || _mergedButtons.Contains(StickRight)) keys.Add(Keys.Right);
+                if (_mergedButtons.Contains(96) || _mergedButtons.Contains(23)) keys.Add(Keys.Enter);
+                if (_mergedButtons.Contains(97)) keys.Add(Keys.Escape);
+                if (_mergedButtons.Contains(102)) keys.Add(Keys.PageUp);
+                if (_mergedButtons.Contains(103)) keys.Add(Keys.PageDown);
+                return keys.Count > 0 ? keys.ToArray() : Array.Empty<Keys>();
+            }
+        }
+
+        private void RecomputeTouchLayout()
+        {
+            var vw = Math.Max(640f, WindowManager.Width);
+            var vh = Math.Max(360f, WindowManager.Height);
+            var eg = TouchEdgeGuardBindable.Value;
+            var safeL = eg ? Math.Max(0f, AndroidPlatformBridge.SafeInsetLeft) * vw : 0f;
+            var safeR = eg ? Math.Max(0f, AndroidPlatformBridge.SafeInsetRight) * vw : 0f;
+            var safeT = eg ? Math.Max(0f, AndroidPlatformBridge.SafeInsetTop) * vh : 0f;
+            var safeB = eg ? Math.Max(0f, AndroidPlatformBridge.SafeInsetBottom) * vh : 0f;
+            var sidePad = eg ? 28f : 12f;
+            _zoneLeftX = safeL + sidePad;
+            _zoneRightX = Math.Max(_zoneLeftX + 200f, vw - safeR - sidePad);
+            var zoneH = Math.Clamp(vh * (TouchHeightPercentBindable.Value / 100f), 110f, vh * 0.65f);
+            _zoneBottomY = vh - safeB - TouchMarginBottomBindable.Value;
+            _zoneTopY = Math.Max(safeT + 90f, _zoneBottomY - zoneH);
+            var kc = Math.Clamp(_activeKeyCount, 1, MaxLanes);
+            var spacing = Math.Max(0f, TouchSpacingBindable.Value);
+            var laneW = Math.Max(32f, (_zoneRightX - _zoneLeftX - spacing * (kc - 1)) / kc);
+            for (var i = 0; i < MaxLanes; i++)
+                _touchLaneRects[i] = i < kc
+                    ? new RectangleF(_zoneLeftX + i * (laneW + spacing), _zoneTopY, laneW, _zoneBottomY - _zoneTopY)
+                    : RectangleF.Empty;
+            TouchPauseRect = new RectangleF(vw - safeR - 92f, safeT + 14f, 76f, 64f);
+        }
+
+        private void ResetBindingsDictionary()
+        {
+            _bindings.Clear();
+            for (var k = 1; k <= MaxLanes; k++)
+            {
+                if (k == 4) { _bindings[4] = (int[])Preset4KButtons[0].Clone(); continue; }
+                var arr = new int[k];
+                for (var i = 0; i < k; i++) arr[i] = GenericDefaults[i % GenericDefaults.Length];
+                _bindings[k] = arr;
+            }
+        }
+
+        private int[] GetBindingsArrayLocked(int keyCount)
+        {
+            var kc = Math.Clamp(keyCount, 1, MaxLanes);
+            if (!_bindings.TryGetValue(kc, out var arr) || arr == null || arr.Length != kc)
+            {
+                arr = new int[kc];
+                for (var i = 0; i < kc; i++)
+                    arr[i] = kc == 4 ? Preset4KButtons[0][i] : GenericDefaults[i % GenericDefaults.Length];
+                _bindings[kc] = arr;
+            }
+            return arr;
+        }
+
+        private void HookBindables()
+        {
+            TouchEnabledBindable.ValueChanged += (_, __) => { AndroidPlatformBridge.SuppressMouseFromTouch = OperatingSystem.IsAndroid() && _inGameplay && !_isPaused && TouchEnabledBindable.Value; SaveConfig(); };
+            TouchHeightPercentBindable.ValueChanged += (_, __) => { RecomputeTouchLayout(); SaveConfig(); };
+            TouchMarginBottomBindable.ValueChanged += (_, __) => { RecomputeTouchLayout(); SaveConfig(); };
+            TouchSpacingBindable.ValueChanged += (_, __) => { RecomputeTouchLayout(); SaveConfig(); };
+            TouchOpacityPercentBindable.ValueChanged += (_, __) => SaveConfig();
+            TouchEdgeGuardBindable.ValueChanged += (_, __) => { RecomputeTouchLayout(); SaveConfig(); };
+            TouchShowLabelsBindable.ValueChanged += (_, __) => SaveConfig();
+            TouchVibrationEnabledBindable.ValueChanged += (_, __) => SaveConfig();
+            GamepadEnabledBindable.ValueChanged += (_, __) => SaveConfig();
+            GamepadDeadzoneBindable.ValueChanged += (_, __) => SaveConfig();
+            GamepadVibrationEnabledBindable.ValueChanged += (_, __) => SaveConfig();
+            GamepadVibrationIntensityBindable.ValueChanged += (_, __) => SaveConfig();
+        }
+
+        private static string GetConfigPath() => Path.Combine(
+            string.IsNullOrWhiteSpace(WobbleGame.WorkingDirectory) ? AppContext.BaseDirectory : WobbleGame.WorkingDirectory,
+            "android_controls.json");
+
+        private void LoadConfig()
+        {
+            _suppressSave = true;
+            try
+            {
+                var path = GetConfigPath();
+                if (!File.Exists(path)) return;
+                var cfg = JsonConvert.DeserializeObject<SavedConfig>(File.ReadAllText(path));
+                if (cfg == null) return;
+                TouchEnabledBindable.Value = cfg.TouchEnabled;
+                TouchHeightPercentBindable.Value = cfg.TouchHeightPercent;
+                TouchMarginBottomBindable.Value = cfg.TouchMarginBottom;
+                TouchSpacingBindable.Value = cfg.TouchSpacing;
+                TouchOpacityPercentBindable.Value = cfg.TouchOpacityPercent;
+                TouchEdgeGuardBindable.Value = cfg.TouchEdgeGuard;
+                TouchShowLabelsBindable.Value = cfg.TouchShowLabels;
+                TouchVibrationEnabledBindable.Value = cfg.TouchVibrationEnabled;
+                GamepadEnabledBindable.Value = cfg.GamepadEnabled;
+                GamepadDeadzoneBindable.Value = cfg.GamepadDeadzone;
+                GamepadVibrationEnabledBindable.Value = cfg.GamepadVibrationEnabled;
+                GamepadVibrationIntensityBindable.Value = cfg.GamepadVibrationIntensity;
+                if (cfg.GamepadBindings != null)
+                    lock (_lock)
+                        foreach (var kv in cfg.GamepadBindings)
+                            if (kv.Key >= 1 && kv.Key <= MaxLanes && kv.Value != null && kv.Value.Length == kv.Key)
+                                _bindings[kv.Key] = (int[])kv.Value.Clone();
+            }
+            catch { }
+            finally { _suppressSave = false; }
+        }
+
+        private void SaveConfig()
+        {
+            if (_suppressSave) return;
+            try
+            {
+                SavedConfig cfg;
+                lock (_lock)
+                {
+                    var map = new Dictionary<int, int[]>();
+                    foreach (var kv in _bindings) map[kv.Key] = (int[])kv.Value.Clone();
+                    cfg = new SavedConfig
+                    {
+                        TouchEnabled = TouchEnabledBindable.Value,
+                        TouchHeightPercent = TouchHeightPercentBindable.Value,
+                        TouchMarginBottom = TouchMarginBottomBindable.Value,
+                        TouchSpacing = TouchSpacingBindable.Value,
+                        TouchOpacityPercent = TouchOpacityPercentBindable.Value,
+                        TouchEdgeGuard = TouchEdgeGuardBindable.Value,
+                        TouchShowLabels = TouchShowLabelsBindable.Value,
+                        TouchVibrationEnabled = TouchVibrationEnabledBindable.Value,
+                        GamepadEnabled = GamepadEnabledBindable.Value,
+                        GamepadDeadzone = GamepadDeadzoneBindable.Value,
+                        GamepadVibrationEnabled = GamepadVibrationEnabledBindable.Value,
+                        GamepadVibrationIntensity = GamepadVibrationIntensityBindable.Value,
+                        GamepadBindings = map
+                    };
+                }
+                var path = GetConfigPath();
+                Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
+                File.WriteAllText(path, JsonConvert.SerializeObject(cfg, Formatting.Indented));
+            }
+            catch { }
+        }
+    }
+}
+""",
+    encoding="utf-8",
+) 
