@@ -2844,6 +2844,11 @@ namespace Quaver.Shared.Online.Workshop
             LastAuthMessage = message ?? string.Empty;
             try { AuthStateChanged?.Invoke(); } catch { }
         }
+        private async Task<bool> LogOnWithTokenAsync(string accountName, string refreshToken, bool rememberSession, CancellationToken ct)
+        {
+            _loggedOnTcs = new TaskCompletionSource<SteamUser.LoggedOnCallback>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _steamUser.LogOn(new SteamUser.LogOnDetails
+            {
 
             
           }
