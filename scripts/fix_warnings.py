@@ -6144,8 +6144,7 @@ namespace Quaver.Shared.Input.Android
 {
     public sealed class AndroidControlsManager
     {
-        public static AndroidControlsManager Instance { get; } = new AndroidControlsManager();
-
+        
         private const int MaxLanes = 10;
         private const int StickLeft = 1001, StickRight = 1002, StickUp = 1003, StickDown = 1004;
 
@@ -6166,6 +6165,7 @@ namespace Quaver.Shared.Input.Android
         };
 
         private static readonly int[] GenericDefaults = { 21, 20, 19, 22, 104, 102, 103, 105, 99, 97 };
+        public static AndroidControlsManager Instance { get; } = new AndroidControlsManager();
 
         private sealed class SavedConfig
         {
