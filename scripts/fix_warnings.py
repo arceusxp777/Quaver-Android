@@ -2485,6 +2485,28 @@ namespace Quaver.Shared.Online.Workshop
         {
             try
             {
+            public void SignOut()
+     {
+         try { _pumpCts?.Cancel(); } catch { }
+         Interlocked.Increment(ref _clientEpoch);
+         try { _steamUser?.LogOff(); } catch { }
+         try { _client?.Disconnect(); } catch { }
+         _connectedTcs = null;
+         _loggedOnTcs = null;
+         AccountName = string.Empty;
+         AuthenticatedSteamId = 0;
+         _depotKeys.Clear();
+         _freeLicenseRequested = false;
+         _savedSession = null;
+         try
+         {
+             var path = GetSessionFilePath();
+             if (File.Exists(path))
+                 File.Delete(path);
+         }
+         catch { }
+         SetAuthState(WorkshopAuthState.Disconnected, "Sesión cerrada");
+     }
                 Directory.CreateDirectory(stateDir);
                 _idFilePath = Path.Combine(stateDir, "steam-machine-id.bin");
                 if (File.Exists(_idFilePath))
@@ -6440,7 +6462,7 @@ namespace Quaver.Shared.Input.Android
                     }
                     var vx = px / sx;
                     var vy = py / sy;
-                    if (t.State == TouchLocationState.Pressed && TouchPauseRect.Contains(vx, vy))
+                    if (t.State == TouchLocationState.Pressed && TouchPauseRect.Contains(new Vector2(vx, vy)))
                     {
                         _touchPauseJustPressed = true;
                         continue;
