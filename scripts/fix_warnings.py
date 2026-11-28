@@ -2849,9 +2849,6 @@ namespace Quaver.Shared.Online.Workshop
             _loggedOnTcs = new TaskCompletionSource<SteamUser.LoggedOnCallback>(TaskCreationOptions.RunContinuationsAsynchronously);
             _steamUser.LogOn(new SteamUser.LogOnDetails
             {
-
-            
-          }
                 Username = accountName,
                 AccessToken = refreshToken,
                 ShouldRememberPassword = rememberSession
