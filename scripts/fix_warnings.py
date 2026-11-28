@@ -2284,11 +2284,61 @@ if bh_cs.is_file():
 om_cs = root / "Quaver.Shared" / "Online" / "OnlineManager.cs"
 if om_cs.is_file():
     omt = om_cs.read_text(encoding="utf-8-sig")
+    om_changed = False
+    old_om_login = (
+        "        public static void Login()\n"
+        "        {\n"
+        "            if (Status.Value != ConnectionStatus.Disconnected)\n"
+        "                return;"
+    )
+    new_om_login = (
+        "        public static void Login()\n"
+        "        {\n"
+        "            if (Status.Value != ConnectionStatus.Disconnected)\n"
+        "                return;\n\n"
+        "            if (global::System.OperatingSystem.IsAndroid() && !SteamManager.IsInitialized)\n"
+        "            {\n"
+        '                Logger.Warning("Online login skipped on Android (SteamManager not initialized).", LogType.Network);\n'
+        "                return;\n"
+        "            }"
+    )
+    if old_om_login in omt and "Online login skipped on Android" not in omt:
+        omt = omt.replace(old_om_login, new_om_login, 1)
+        om_changed = True
     old_om = "Client.Connect(SteamUser.GetSteamID().m_SteamID, SteamFriends.GetPersonaName(), false);"
     new_om = "Client.Connect(SteamManager.GetSteamIdOrZero(), SteamManager.GetPersonaNameOrDefault(), false);"
     if old_om in omt:
         omt = omt.replace(old_om, new_om, 1)
+        om_changed = True
+    if om_changed:
         om_cs.write_text(omt, encoding="utf-8")
+
+ld_cs = root / "Quaver.Shared" / "Graphics" / "LoadingDialog.cs"
+if ld_cs.is_file():
+    ldt = ld_cs.read_text(encoding="utf-8-sig")
+    old_ld = (
+        "            ThreadScheduler.Run(() =>\n"
+        "            {\n"
+        "                loadAction();\n"
+        "                Close();\n"
+        "            });"
+    )
+    new_ld = (
+        "            ThreadScheduler.Run(() =>\n"
+        "            {\n"
+        "                try\n"
+        "                {\n"
+        "                    loadAction();\n"
+        "                }\n"
+        "                finally\n"
+        "                {\n"
+        "                    Close();\n"
+        "                }\n"
+        "            });"
+    )
+    if old_ld in ldt:
+        ldt = ldt.replace(old_ld, new_ld, 1)
+        ld_cs.write_text(ldt, encoding="utf-8")
 
 # 17) QuaverScreenType.Workshop y enlaces de menú (V1 MainMenu, V2 MainMenu, IconTextButtonSkins)
 qst_cs = root / "Quaver.Shared" / "Screens" / "QuaverScreenType.cs"
