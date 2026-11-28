@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - develop
+      - 'scripts/fix_warnings.py'
     paths:
       - '.github/workflows/android-probe.yml'
 
@@ -2894,6 +2895,7 @@ jobs:
   # Hito 2 (real): cabecera Android del juego Quaver (APK Debug arm64) con shaders MGFX v10, BASS nativo y SQLite Android.
   android-head:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
@@ -4219,7 +4221,7 @@ jobs:
               <Nullable>disable</Nullable>
               <ImplicitUsings>disable</ImplicitUsings>
               <LangVersion>latest</LangVersion>
-              <NoWarn>$(NoWarn);NU1902;NU1903;NU1701</NoWarn>
+              <NoWarn>$(NoWarn);NU1902;NU1903;NU1701;CS8601;CS8618;CS8714;CS8765</NoWarn>
             </PropertyGroup>
             <ItemGroup>
               <PackageReference Include="MonoGame.Framework.Android" Version="3.8.1.303" />
@@ -4275,7 +4277,7 @@ jobs:
           {
               [Activity(Label = "Quaver", Icon = "@drawable/icon", MainLauncher = true, LaunchMode = LaunchMode.SingleInstance,
                   ScreenOrientation = ScreenOrientation.SensorLandscape,
-                  ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.Keyboard | ConfigChanges.KeyboardHidden | ConfigChanges.ScreenSize)]
+                  ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.Keyboard | ConfigChanges.KeyboardHidden | ConfigChanges.ScreenSize | ConfigChanges.ScreenLayout | ConfigChanges.SmallestScreenSize | ConfigChanges.Navigation)]
               public class MainActivity : AndroidGameActivity
               {
                   private string _crashFile;
