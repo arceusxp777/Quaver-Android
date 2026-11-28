@@ -6,9 +6,9 @@ on:
   push:
     branches:
       - develop
-      - 'scripts/fix_warnings.py'
     paths:
       - '.github/workflows/android-probe.yml'
+      - 'scripts/fix_warnings.py'
 
 jobs:
   baseline:
